@@ -108,6 +108,7 @@ func (s *BuilderService) Compile(source string, name string, hidden bool) (strin
 	}
 
 	cmd := exec.CommandContext(ctx, "mcs",
+		"-unsafe",
 		"-target:"+target,
 		"-optimize+",
 		"-out:"+exePath,
