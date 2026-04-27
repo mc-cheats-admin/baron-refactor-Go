@@ -81,6 +81,8 @@ func main() {
 
 	// ── Stream & WebSocket ────────────────────────────────────────────────────
 	r.POST("/api/stream", api.AgentStream)
+	r.GET("/api/agent/stream_ws", api.AgentStreamWS)
+	r.GET("/api/panel/stream_ws", api.PanelStreamWS)
 	r.GET("/ws", api.WSHandler)
 	r.GET("/socket.io/", api.WSHandler)
 

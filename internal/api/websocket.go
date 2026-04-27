@@ -12,6 +12,52 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// BinaryStreamHub handles raw binary frames from agents and multicasts to panels
+type BinaryStreamHub struct {
+	clients map[string]map[*websocket.Conn]bool // agentID -> list of panel connections
+	mu      sync.RWMutex
+}
+
+var GlobalStreamHub = &BinaryStreamHub{
+	clients: make(map[string]map[*websocket.Conn]bool),
+}
+
+func (h *BinaryStreamHub) RegisterPanel(agentID string, conn *websocket.Conn) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.clients[agentID] == nil {
+		h.clients[agentID] = make(map[*websocket.Conn]bool)
+	}
+	h.clients[agentID][conn] = true
+}
+
+func (h *BinaryStreamHub) UnregisterPanel(agentID string, conn *websocket.Conn) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, ok := h.clients[agentID]; ok {
+		delete(h.clients[agentID], conn)
+	}
+}
+
+func (h *BinaryStreamHub) Broadcast(agentID string, data []byte) {
+	h.mu.RLock()
+	panels, ok := h.clients[agentID]
+	h.mu.RUnlock()
+
+	if !ok {
+		return
+	}
+
+	for p := range panels {
+		err := p.WriteMessage(websocket.BinaryMessage, data)
+		if err != nil {
+			log.Debug().Err(err).Str("agent", agentID).Msg("Failed to send binary frame to panel")
+			h.UnregisterPanel(agentID, p)
+			p.Close()
+		}
+	}
+}
+
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		return true
@@ -59,6 +105,64 @@ func (h *Hub) Run() {
 				}
 			}
 			h.mu.Unlock()
+		}
+	}
+}
+
+// PanelStreamWS handles binary stream subscriptions for the panel
+func PanelStreamWS(c *gin.Context) {
+	agentID := c.Query("cid")
+	if agentID == "" {
+		c.String(http.StatusBadRequest, "Missing cid")
+		return
+	}
+
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		log.Warn().Err(err).Msg("Panel stream upgrade failed")
+		return
+	}
+
+	GlobalStreamHub.RegisterPanel(agentID, conn)
+
+	defer func() {
+		GlobalStreamHub.UnregisterPanel(agentID, conn)
+		conn.Close()
+	}()
+
+	// Keep alive
+	for {
+		if _, _, err := conn.ReadMessage(); err != nil {
+			break
+		}
+	}
+}
+
+// AgentStreamWS handles binary frame uploads from agents over WebSocket
+func AgentStreamWS(c *gin.Context) {
+	agentID := c.Query("id")
+	if agentID == "" {
+		c.String(http.StatusBadRequest, "Missing id")
+		return
+	}
+
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		log.Warn().Err(err).Msg("Agent stream upgrade failed")
+		return
+	}
+
+	defer conn.Close()
+
+	for {
+		messageType, data, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+
+		if messageType == websocket.BinaryMessage {
+			// Broadcast to all panels subscribed to this agent
+			GlobalStreamHub.Broadcast(agentID, data)
 		}
 	}
 }

