@@ -124,9 +124,17 @@ func PanelBuild(c *gin.Context) {
 	reg, _ := regexp.Compile("[^a-zA-Z0-9]+")
 	input.Name = reg.ReplaceAllString(input.Name, "")
 
+	if input.Name == "" {
+		input.Name = "agent"
+	}
+
 	// Default ID if empty
 	if input.ID == "" || input.ID == "AUTO" {
-		input.ID = time.Now().Format("020106") + "-" + hex.EncodeToString([]byte(input.Name))[:4]
+		hexPart := hex.EncodeToString([]byte(input.Name))
+		if len(hexPart) > 4 {
+			hexPart = hexPart[:4]
+		}
+		input.ID = time.Now().Format("020106") + "-" + hexPart
 	}
 
 	GlobalHub.BroadcastSystem("BUILD: Starting compilation for " + input.Name + " (Target: " + input.ID + ")")
