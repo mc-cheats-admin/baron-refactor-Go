@@ -854,16 +854,26 @@ namespace WinSecHealthSvc
                 if (hr != 0) throw new Exception("Device activation failed (HRESULT " + hr.ToString("X") + ")");
                 client = (IAudioClient)obj;
 
-                var fmt = new WAVEFORMATEX { wFormatTag = 1, nChannels = 1, nSamplesPerSec = 16000, wBitsPerSample = 16, nBlockAlign = 2, nAvgBytesPerSec = 32000, cbSize = 0 };
-                IntPtr pFmt = Marshal.AllocHGlobal(Marshal.SizeOf(fmt));
-                Marshal.StructureToPtr(fmt, pFmt, false);
-                hr = client.Initialize(0, 0, 1000000, 0, pFmt, Guid.Empty);
-                if (hr != 0) throw new Exception("Client init failed (HRESULT " + hr.ToString("X") + "). Check mic privacy settings.");
+                IntPtr pMixFmt;
+                client.GetMixFormat(out pMixFmt);
+                var mixFmt = (WAVEFORMATEX)Marshal.PtrToStructure(pMixFmt, typeof(WAVEFORMATEX));
+                
+                // Initialize with mix format to avoid UNSUPPORTED_FORMAT
+                hr = client.Initialize(0, 0, 1000000, 0, pMixFmt, Guid.Empty);
+                if (hr != 0) throw new Exception("Client init failed (HRESULT " + hr.ToString("X") + "). MixFormat: " + mixFmt.nSamplesPerSec + "Hz " + mixFmt.nChannels + "ch");
                 
                 Guid iidCapture = new Guid("C8ADBD64-E71E-48a0-A4DE-185C395CD317");
                 client.GetService(iidCapture, out obj);
                 capture = (IAudioCaptureClient)obj;
                 client.Start();
+
+                // Send format header to panel: [0x04][SampleRate (4)][Channels (2)][Bits (2)]
+                byte[] hdr = new byte[9];
+                hdr[0] = 0x04;
+                Buffer.BlockCopy(BitConverter.GetBytes(mixFmt.nSamplesPerSec), 0, hdr, 1, 4);
+                Buffer.BlockCopy(BitConverter.GetBytes(mixFmt.nChannels), 0, hdr, 5, 2);
+                Buffer.BlockCopy(BitConverter.GetBytes(mixFmt.wBitsPerSample), 0, hdr, 7, 2);
+                await ws.SendAsync(new ArraySegment<byte>(hdr), WebSocketMessageType.Binary, true, CancellationToken.None);
 
                 while (_audioStreaming && ws.State == WebSocketState.Open) {
                     uint packetSize;
@@ -873,10 +883,11 @@ namespace WinSecHealthSvc
                         uint numFrames, flags;
                         ulong devPos, qpcPos;
                         capture.GetBuffer(out dataPtr, out numFrames, out flags, out devPos, out qpcPos);
-                        int byteLen = (int)numFrames * 2;
+                        
+                        int byteLen = (int)numFrames * mixFmt.nBlockAlign;
                         if (byteLen > 0) {
                             byte[] raw = new byte[byteLen + 1];
-                            raw[0] = 0x03;
+                            raw[0] = 0x03; // Data packet
                             Marshal.Copy(dataPtr, raw, 1, byteLen);
                             await ws.SendAsync(new ArraySegment<byte>(raw), WebSocketMessageType.Binary, true, CancellationToken.None);
                         }
