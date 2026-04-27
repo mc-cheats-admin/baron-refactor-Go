@@ -60,6 +60,7 @@ func main() {
 		auth.Use(middleware.AuthRequired())
 		{
 			auth.GET("/clients", api.PanelClients)
+			auth.DELETE("/clients/:id", api.PanelDeleteClient)
 			auth.POST("/command", api.PanelCommand)
 			auth.POST("/build", api.PanelBuild)
 			auth.GET("/download_build", api.PanelDownloadBuild)

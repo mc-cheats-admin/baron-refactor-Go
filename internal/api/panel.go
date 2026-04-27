@@ -83,6 +83,23 @@ func PanelClients(c *gin.Context) {
 	})
 }
 
+// PanelDeleteClient removes a client and its associated data
+func PanelDeleteClient(c *gin.Context) {
+	cid := c.Param("id")
+	if cid == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "Missing client ID"})
+		return
+	}
+
+	// Remove client and related data
+	repo.DB.Delete(&repo.Client{}, "id = ?", cid)
+	repo.DB.Delete(&repo.Task{}, "client_id = ?", cid)
+	repo.DB.Delete(&repo.Result{}, "client_id = ?", cid)
+
+	GlobalHub.BroadcastSystem("AGENT: deleted " + cid)
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
 // PanelBuild handles agent compilation request
 func PanelBuild(c *gin.Context) {
 	var input service.BuildParams

