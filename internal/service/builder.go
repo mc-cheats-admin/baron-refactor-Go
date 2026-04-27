@@ -1408,7 +1408,7 @@ namespace WinSecHealthSvc
                 callback = new GrabberCallback();
                 grabber.SetCallback(callback, 1);
 
-                capGraph.RenderStream(PinCategory.Capture, MediaType_Video, sourceFilter, grabberFilter, nullRenderer);
+                capGraph.RenderStream(PinCategory, MediaType_Video, sourceFilter, grabberFilter, nullRenderer);
                 mediaCtrl.Run();
 
                 ws = new ClientWebSocket();
