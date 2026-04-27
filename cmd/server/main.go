@@ -76,6 +76,7 @@ func main() {
 		agentGroup.POST("/beacon", middleware.BeaconRateLimit(), api.AgentBeacon)
 		agentGroup.POST("/result", api.AgentResult)
 		agentGroup.POST("/upload", api.AgentUpload)
+		agentGroup.POST("/stream_frame", api.AgentStreamFrame)
 	}
 
 	// ── Stream & WebSocket ────────────────────────────────────────────────────

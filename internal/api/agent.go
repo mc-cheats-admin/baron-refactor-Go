@@ -278,3 +278,33 @@ func AgentUpload(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"ok": true, "path": savePath})
 }
+
+// AgentStreamFrame handles incoming MJPEG frames from the agent.
+// It directly broadcasts them to the Web Panel via WebSocket.
+func AgentStreamFrame(c *gin.Context) {
+	var input struct {
+		ID    string `json:"id"`
+		Frame string `json:"frame"` // Base64 encoded JPEG
+	}
+
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"ok": false})
+		return
+	}
+
+	if input.ID == "" || input.Frame == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"ok": false})
+		return
+	}
+
+	// Broadcast directly to panel
+	Broadcast(gin.H{
+		"event": "stream_frame",
+		"data": gin.H{
+			"cid":   input.ID,
+			"frame": input.Frame,
+		},
+	})
+
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
