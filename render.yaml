@@ -10,6 +10,8 @@ services:
           property: connectionString
       - key: BARON_SECRET
         generateValue: true
+      - key: AGENT_SECRET
+        generateValue: true
       - key: PORT
         value: 8080
       - key: GO_ENV

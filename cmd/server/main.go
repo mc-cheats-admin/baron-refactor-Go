@@ -53,12 +53,12 @@ func main() {
 	panel := r.Group("/api/panel")
 	{
 		panel.POST("/login", api.PanelLogin)
-		panel.POST("/admin_action", api.PanelAdmin)
-		panel.GET("/check", api.PanelCheck)
 
 		auth := panel.Group("/")
 		auth.Use(middleware.AuthRequired())
 		{
+			auth.GET("/check", api.PanelCheck)
+			auth.POST("/admin_action", api.PanelAdmin)
 			auth.GET("/clients", api.PanelClients)
 			auth.DELETE("/clients/:id", api.PanelDeleteClient)
 			auth.POST("/command", api.PanelCommand)
